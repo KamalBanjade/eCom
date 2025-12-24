@@ -3,6 +3,8 @@ using Commerce.Application.Features.Carts;
 using Commerce.Domain.Entities.Carts;
 using Commerce.Domain.Entities.Products;
 using Commerce.Infrastructure.Data;
+using Commerce.Infrastructure.Identity;
+using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
 
 namespace Commerce.Infrastructure.Services;
@@ -10,14 +12,26 @@ namespace Commerce.Infrastructure.Services;
 public class CartService : ICartService
 {
     private readonly CommerceDbContext _context;
+    private readonly UserManager<ApplicationUser> _userManager;
 
-    public CartService(CommerceDbContext context)
+    public CartService(CommerceDbContext context, UserManager<ApplicationUser> userManager)
     {
         _context = context;
+        _userManager = userManager;
     }
 
-    public async Task<ApiResponse<Cart>> GetCartAsync(Guid? customerId, string? anonymousId, CancellationToken cancellationToken = default)
+    private async Task<Guid?> GetCustomerProfileIdAsync(Guid? applicationUserId)
     {
+        if (!applicationUserId.HasValue) return null;
+        
+        var user = await _userManager.FindByIdAsync(applicationUserId.Value.ToString());
+        return user?.CustomerProfileId;
+    }
+
+    public async Task<ApiResponse<Cart>> GetCartAsync(Guid? applicationUserId, string? anonymousId, CancellationToken cancellationToken = default)
+    {
+        var customerId = await GetCustomerProfileIdAsync(applicationUserId);
+
         var cart = await GetCartEntityAsync(customerId, anonymousId, cancellationToken);
         if (cart == null)
         {
@@ -33,8 +47,10 @@ public class CartService : ICartService
         return ApiResponse<Cart>.SuccessResponse(cart);
     }
 
-    public async Task<ApiResponse<Cart>> AddItemAsync(Guid? customerId, string? anonymousId, Guid productVariantId, int quantity, CancellationToken cancellationToken = default)
+    public async Task<ApiResponse<Cart>> AddItemAsync(Guid? applicationUserId, string? anonymousId, Guid productVariantId, int quantity, CancellationToken cancellationToken = default)
     {
+        var customerId = await GetCustomerProfileIdAsync(applicationUserId);
+
         var cart = await GetCartEntityAsync(customerId, anonymousId, cancellationToken);
         if (cart == null)
         {
@@ -69,8 +85,10 @@ public class CartService : ICartService
         return ApiResponse<Cart>.SuccessResponse(cart);
     }
 
-    public async Task<ApiResponse<Cart>> RemoveItemAsync(Guid? customerId, string? anonymousId, Guid itemId, CancellationToken cancellationToken = default)
+    public async Task<ApiResponse<Cart>> RemoveItemAsync(Guid? applicationUserId, string? anonymousId, Guid itemId, CancellationToken cancellationToken = default)
     {
+        var customerId = await GetCustomerProfileIdAsync(applicationUserId);
+
         var cart = await GetCartEntityAsync(customerId, anonymousId, cancellationToken);
         if (cart == null)
         {
@@ -87,8 +105,11 @@ public class CartService : ICartService
         return ApiResponse<Cart>.SuccessResponse(cart);
     }
 
-    public async Task<ApiResponse<bool>> TransferAnonymousCartToCustomerAsync(string anonymousId, Guid customerId, CancellationToken cancellationToken = default)
+    public async Task<ApiResponse<bool>> TransferAnonymousCartToCustomerAsync(string anonymousId, Guid applicationUserId, CancellationToken cancellationToken = default)
     {
+        var customerId = await GetCustomerProfileIdAsync(applicationUserId);
+        if (!customerId.HasValue) return ApiResponse<bool>.ErrorResponse("User has no associated customer profile");
+
         var anonymousCart = await _context.Carts
             .Include(c => c.Items)
             .FirstOrDefaultAsync(c => c.AnonymousId == anonymousId, cancellationToken);
@@ -100,12 +121,12 @@ public class CartService : ICartService
 
         var customerCart = await _context.Carts
             .Include(c => c.Items)
-            .FirstOrDefaultAsync(c => c.CustomerProfileId == customerId, cancellationToken);
+            .FirstOrDefaultAsync(c => c.CustomerProfileId == customerId.Value, cancellationToken);
 
         if (customerCart == null)
         {
             // Simple transfer: just claim ownership
-            anonymousCart.TransferToCustomer(customerId);
+            anonymousCart.TransferToCustomer(customerId.Value);
         }
         else
         {

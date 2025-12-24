@@ -34,6 +34,22 @@ public class CommerceDbContext : IdentityDbContext<ApplicationUser>
 
         // Apply all configurations from assembly
         modelBuilder.ApplyConfigurationsFromAssembly(typeof(CommerceDbContext).Assembly);
+
+        modelBuilder.Entity<Cart>(entity =>
+        {
+            entity.Property(e => e.CustomerProfileId)
+                .IsRequired(false); // Make nullable
+
+            entity.Property(e => e.AnonymousId)
+                .HasMaxLength(100);
+
+            // Ensure either CustomerProfileId or AnonymousId exists
+            // Ensure either CustomerProfileId or AnonymousId exists
+            entity.ToTable(t => t.HasCheckConstraint(
+                "CK_Cart_HasIdentifier",
+                "\"CustomerProfileId\" IS NOT NULL OR \"AnonymousId\" IS NOT NULL"
+            ));
+        });
     }
 
     public override Task<int> SaveChangesAsync(CancellationToken cancellationToken = default)

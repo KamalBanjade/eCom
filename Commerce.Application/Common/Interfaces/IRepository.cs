@@ -1,14 +1,26 @@
+// File: Commerce.Application/Common/Interfaces/IRepository.cs
+using System.Linq.Expressions;
+
 namespace Commerce.Application.Common.Interfaces;
 
-/// <summary>
-/// Generic repository interface for aggregate roots ONLY
-/// Should NOT be used directly by controllers
-/// </summary>
 public interface IRepository<T> where T : class
 {
-    Task<T?> GetByIdAsync(Guid id, CancellationToken cancellationToken = default);
-    Task<IEnumerable<T>> GetAllAsync(CancellationToken cancellationToken = default);
-    Task<T> AddAsync(T entity, CancellationToken cancellationToken = default);
-    Task UpdateAsync(T entity, CancellationToken cancellationToken = default);
-    Task DeleteAsync(T entity, CancellationToken cancellationToken = default);
+    Task<T?> GetByIdAsync(
+        Guid id,
+        CancellationToken ct = default,
+        params Expression<Func<T, object>>[] includes);
+
+    Task<IEnumerable<T>> GetAllAsync(
+        CancellationToken ct = default,
+        params Expression<Func<T, object>>[] includes);
+
+    Task<IEnumerable<T>> GetAsync(
+        Expression<Func<T, bool>>? filter = null,
+        CancellationToken ct = default,
+        params Expression<Func<T, object>>[] includes);
+
+    Task<T> AddAsync(T entity, CancellationToken ct = default);
+    Task UpdateAsync(T entity, CancellationToken ct = default);
+    Task DeleteAsync(T entity, CancellationToken ct = default);
+    Task<int> SaveChangesAsync(CancellationToken ct = default);
 }

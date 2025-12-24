@@ -3,6 +3,7 @@ using System;
 using Commerce.Infrastructure.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 
@@ -11,9 +12,11 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace Commerce.Infrastructure.Migrations
 {
     [DbContext(typeof(CommerceDbContext))]
-    partial class CommerceDbContextModelSnapshot : ModelSnapshot
+    [Migration("20251224100613_MakeCartCustomerProfileIdNullable")]
+    partial class MakeCartCustomerProfileIdNullable
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -52,10 +55,7 @@ namespace Commerce.Infrastructure.Migrations
 
                     b.HasIndex("ExpiresAt");
 
-                    b.ToTable("Carts", t =>
-                        {
-                            t.HasCheckConstraint("CK_Cart_HasIdentifier", "\"CustomerProfileId\" IS NOT NULL OR \"AnonymousId\" IS NOT NULL");
-                        });
+                    b.ToTable("Carts");
                 });
 
             modelBuilder.Entity("Commerce.Domain.Entities.Carts.CartItem", b =>
@@ -296,9 +296,6 @@ namespace Commerce.Infrastructure.Migrations
                     b.Property<string>("Attributes")
                         .IsRequired()
                         .HasColumnType("jsonb");
-
-                    b.Property<int>("AvailableStock")
-                        .HasColumnType("integer");
 
                     b.Property<DateTime>("CreatedAt")
                         .HasColumnType("timestamp with time zone");

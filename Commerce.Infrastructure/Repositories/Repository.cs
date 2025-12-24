@@ -1,12 +1,11 @@
+// Commerce.Infrastructure/Repositories/Repository.cs
 using Commerce.Application.Common.Interfaces;
 using Commerce.Infrastructure.Data;
 using Microsoft.EntityFrameworkCore;
+using System.Linq.Expressions;
 
 namespace Commerce.Infrastructure.Repositories;
 
-/// <summary>
-/// Generic repository implementation for aggregate roots ONLY
-/// </summary>
 public class Repository<T> : IRepository<T> where T : class
 {
     protected readonly CommerceDbContext _context;
@@ -18,32 +17,85 @@ public class Repository<T> : IRepository<T> where T : class
         _dbSet = context.Set<T>();
     }
 
-    public virtual async Task<T?> GetByIdAsync(Guid id, CancellationToken cancellationToken = default)
+    public async Task<T?> GetByIdAsync(
+        Guid id,
+        CancellationToken cancellationToken = default,
+        params Expression<Func<T, object>>[] includes)
     {
-        return await _dbSet.FindAsync(new object[] { id }, cancellationToken);
+        IQueryable<T> query = _dbSet;
+
+        if (includes != null)
+        {
+            foreach (var include in includes)
+            {
+                query = query.Include(include);
+            }
+        }
+
+        return await query.FirstOrDefaultAsync(e => EF.Property<Guid>(e, "Id") == id, cancellationToken);
     }
 
-    public virtual async Task<IEnumerable<T>> GetAllAsync(CancellationToken cancellationToken = default)
+    public async Task<IEnumerable<T>> GetAllAsync(
+        CancellationToken cancellationToken = default,
+        params Expression<Func<T, object>>[] includes)
     {
-        return await _dbSet.ToListAsync(cancellationToken);
+        IQueryable<T> query = _dbSet;
+
+        if (includes != null)
+        {
+            foreach (var include in includes)
+            {
+                query = query.Include(include);
+            }
+        }
+
+        return await query.ToListAsync(cancellationToken);
     }
 
-    public virtual async Task<T> AddAsync(T entity, CancellationToken cancellationToken = default)
+public async Task<IEnumerable<T>> GetAsync(
+    Expression<Func<T, bool>>? filter = null,
+    CancellationToken cancellationToken = default,
+    params Expression<Func<T, object>>[] includes)
+{
+    IQueryable<T> query = _dbSet;
+
+    if (includes?.Length > 0)
+    {
+        foreach (var include in includes)
+        {
+            query = query.Include(include);
+        }
+    }
+
+    if (filter != null)
+    {
+        query = query.Where(filter);
+    }
+
+    return await query.ToListAsync(cancellationToken);
+}
+
+    public async Task<T> AddAsync(T entity, CancellationToken cancellationToken = default)
     {
         await _dbSet.AddAsync(entity, cancellationToken);
-        await _context.SaveChangesAsync(cancellationToken);
         return entity;
     }
 
-    public virtual async Task UpdateAsync(T entity, CancellationToken cancellationToken = default)
+    public Task UpdateAsync(T entity, CancellationToken cancellationToken = default)
     {
         _dbSet.Update(entity);
-        await _context.SaveChangesAsync(cancellationToken);
+        return Task.CompletedTask;
     }
 
-    public virtual async Task DeleteAsync(T entity, CancellationToken cancellationToken = default)
+    public Task DeleteAsync(T entity, CancellationToken cancellationToken = default)
     {
         _dbSet.Remove(entity);
-        await _context.SaveChangesAsync(cancellationToken);
+        return Task.CompletedTask;
+    }
+
+    // Add this if you want explicit save
+    public async Task<int> SaveChangesAsync(CancellationToken cancellationToken = default)
+    {
+        return await _context.SaveChangesAsync(cancellationToken);
     }
 }

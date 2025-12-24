@@ -9,7 +9,7 @@ namespace Commerce.Domain.Entities.Carts;
 public class Cart : BaseEntity
 {
     // INVARIANT: Exactly one of CustomerProfileId or AnonymousId must be set
-    public Guid? CustomerProfileId { get; private set; }
+    public Guid? CustomerProfileId { get; set; }
     public CustomerProfile? CustomerProfile { get; set; }
     
     public string? AnonymousId { get; private set; }
