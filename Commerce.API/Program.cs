@@ -2,6 +2,7 @@ using Commerce.Application.Common.Interfaces;
 using Commerce.Application.Features.Auth;
 using Commerce.Application.Features.Auth.DTOs;
 using Commerce.Application.Features.Carts;
+using Commerce.Application.Features.Orders;
 using Commerce.Application.Features.Products;
 using Commerce.Infrastructure.Data;
 using Commerce.Infrastructure.Identity;
@@ -61,8 +62,11 @@ builder.Services.AddAuthentication(options =>
 builder.Services.AddScoped(typeof(IRepository<>), typeof(Repository<>));
 builder.Services.AddScoped<IAuthService, AuthService>();
 builder.Services.AddScoped<ICartService, CartService>();
+builder.Services.AddScoped<IOrderService, OrderService>();
 builder.Services.AddScoped<IProductService, ProductService>();
 builder.Services.AddScoped<IUnitOfWork, UnitOfWork>();
+builder.Services.AddScoped<IEmailService, EmailService>();
+builder.Services.AddScoped<ISecurityLogger, SecurityLogger>();
 
 // 5. API Configuration
 builder.Services.AddControllers();
@@ -95,6 +99,10 @@ builder.Services.AddSwaggerGen(c =>
             new string[] {}
         }
     });
+
+    var xmlFile = $"{System.Reflection.Assembly.GetExecutingAssembly().GetName().Name}.xml";
+    var xmlPath = Path.Combine(AppContext.BaseDirectory, xmlFile);
+    c.IncludeXmlComments(xmlPath);
 });
 
 var app = builder.Build();
@@ -117,7 +125,9 @@ app.MapControllers();
 using (var scope = app.Services.CreateScope())
 {
     var roleManager = scope.ServiceProvider.GetRequiredService<RoleManager<IdentityRole>>();
-    var roles = new[] { "SuperAdmin", "Admin", "Operations", "Support", "Customer" };
+    var userManager = scope.ServiceProvider.GetRequiredService<UserManager<ApplicationUser>>();
+    
+    var roles = new[] { "SuperAdmin", "Admin", "Warehouse", "Support", "Customer" };
     
     foreach (var role in roles)
     {
@@ -125,6 +135,21 @@ using (var scope = app.Services.CreateScope())
         {
             await roleManager.CreateAsync(new IdentityRole(role));
         }
+    }
+
+    // Seed Admin User
+    var adminEmail = "admin@ecommerce.com";
+    if (await userManager.FindByEmailAsync(adminEmail) == null)
+    {
+        var admin = new ApplicationUser 
+        { 
+            UserName = adminEmail, 
+            Email = adminEmail, 
+            EmailConfirmed = true,
+            MfaEnabled = false // Disabled for testing simplicity
+        };
+        await userManager.CreateAsync(admin, "Admin123!");
+        await userManager.AddToRoleAsync(admin, "Admin");
     }
 }
 

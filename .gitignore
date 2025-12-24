@@ -7,6 +7,8 @@
 *.sln.docstates
 
 # Build outputs
+tests/
+*.ps1
 bin/
 obj/
 build/
