@@ -1,4 +1,5 @@
 using Commerce.Application.Common.Interfaces;
+using StackExchange.Redis;
 using Commerce.Application.Features.Auth;
 using Commerce.Application.Features.Auth.DTOs;
 using Commerce.Application.Features.Carts;
@@ -7,13 +8,19 @@ using Commerce.Application.Features.Products;
 using Commerce.Infrastructure.Data;
 using Commerce.Infrastructure.Identity;
 using Commerce.Infrastructure.Repositories;
+using Commerce.Application.Features.Inventory;
 using Commerce.Infrastructure.Services;
+using Commerce.Infrastructure.Settings;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
 using Microsoft.OpenApi.Models;
 using System.Text;
+using DotNetEnv;
+
+// Load .env file from current or parent directories
+Env.TraversePath().Load();
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -22,6 +29,10 @@ var builder = WebApplication.CreateBuilder(args);
 // 1. Database Configuration
 builder.Services.AddDbContext<CommerceDbContext>(options =>
     options.UseNpgsql(builder.Configuration.GetConnectionString("DefaultConnection")));
+
+// 1.1 Redis Configuration
+builder.Services.AddSingleton<IConnectionMultiplexer>(sp => 
+    ConnectionMultiplexer.Connect(builder.Configuration.GetConnectionString("Redis")!));
 
 // 2. Identity Configuration
 builder.Services.AddIdentity<ApplicationUser, IdentityRole>(options =>
@@ -62,11 +73,16 @@ builder.Services.AddAuthentication(options =>
 builder.Services.AddScoped(typeof(IRepository<>), typeof(Repository<>));
 builder.Services.AddScoped<IAuthService, AuthService>();
 builder.Services.AddScoped<ICartService, CartService>();
+builder.Services.AddScoped<IInventoryService, InventoryService>();
 builder.Services.AddScoped<IOrderService, OrderService>();
 builder.Services.AddScoped<IProductService, ProductService>();
 builder.Services.AddScoped<IUnitOfWork, UnitOfWork>();
 builder.Services.AddScoped<IEmailService, EmailService>();
 builder.Services.AddScoped<ISecurityLogger, SecurityLogger>();
+builder.Services.AddScoped<IImageStorageService, CloudinaryImageStorageService>();
+
+// 5. Cloudinary Configuration
+builder.Services.Configure<CloudinarySettings>(builder.Configuration.GetSection("Cloudinary"));
 
 // 5. API Configuration
 builder.Services.AddControllers();

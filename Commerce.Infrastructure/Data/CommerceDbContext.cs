@@ -1,4 +1,5 @@
 using Commerce.Domain.Entities.Carts;
+using Commerce.Domain.Entities.Base;
 using Commerce.Domain.Entities.Inventory;
 using Commerce.Domain.Entities.Orders;
 using Commerce.Domain.Entities.Products;
@@ -11,41 +12,41 @@ namespace Commerce.Infrastructure.Data;
 
 public class CommerceDbContext : IdentityDbContext<ApplicationUser>
 {
-    public CommerceDbContext(DbContextOptions<CommerceDbContext> options) : base(options)
+    public CommerceDbContext(DbContextOptions<CommerceDbContext> options)
+        : base(options)
     {
     }
 
-    // Domain entities
-    public DbSet<CustomerProfile> CustomerProfiles { get; set; }
-    public DbSet<Product> Products { get; set; }
-    public DbSet<ProductVariant> ProductVariants { get; set; }
-    public DbSet<Inventory> Inventories { get; set; }
-    public DbSet<Cart> Carts { get; set; }
-    public DbSet<CartItem> CartItems { get; set; }
-    public DbSet<Order> Orders { get; set; }
-    public DbSet<OrderItem> OrderItems { get; set; }
-    
-    // Identity
-    public DbSet<RefreshToken> RefreshTokens { get; set; }
-    public DbSet<PasswordResetToken> PasswordResetTokens { get; set; }
+    // DbSets
+    public DbSet<CustomerProfile> CustomerProfiles => Set<CustomerProfile>();
+    public DbSet<Category> Categories => Set<Category>();
+    public DbSet<Product> Products => Set<Product>();
+    public DbSet<ProductVariant> ProductVariants => Set<ProductVariant>();
+    public DbSet<Inventory> Inventories => Set<Inventory>();
+    public DbSet<StockReservation> StockReservations => Set<StockReservation>();
+    public DbSet<Cart> Carts => Set<Cart>();
+    public DbSet<CartItem> CartItems => Set<CartItem>();
+    public DbSet<Order> Orders => Set<Order>();
+    public DbSet<OrderItem> OrderItems => Set<OrderItem>();
+    public DbSet<RefreshToken> RefreshTokens => Set<RefreshToken>();
+    public DbSet<PasswordResetToken> PasswordResetTokens => Set<PasswordResetToken>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         base.OnModelCreating(modelBuilder);
 
-        // Apply all configurations from assembly
+        // Apply all IEntityTypeConfiguration from this assembly
         modelBuilder.ApplyConfigurationsFromAssembly(typeof(CommerceDbContext).Assembly);
+
+        // Additional manual configurations (if needed beyond fluent configs)
+        modelBuilder.Entity<StockReservation>()
+            .HasIndex(r => r.ExpiresAt);
 
         modelBuilder.Entity<Cart>(entity =>
         {
-            entity.Property(e => e.CustomerProfileId)
-                .IsRequired(false); // Make nullable
+            entity.Property(e => e.CustomerProfileId).IsRequired(false);
+            entity.Property(e => e.AnonymousId).HasMaxLength(100);
 
-            entity.Property(e => e.AnonymousId)
-                .HasMaxLength(100);
-
-            // Ensure either CustomerProfileId or AnonymousId exists
-            // Ensure either CustomerProfileId or AnonymousId exists
             entity.ToTable(t => t.HasCheckConstraint(
                 "CK_Cart_HasIdentifier",
                 "\"CustomerProfileId\" IS NOT NULL OR \"AnonymousId\" IS NOT NULL"
@@ -55,23 +56,33 @@ public class CommerceDbContext : IdentityDbContext<ApplicationUser>
 
     public override Task<int> SaveChangesAsync(CancellationToken cancellationToken = default)
     {
-        // Update timestamps
-        var entries = ChangeTracker.Entries()
-            .Where(e => e.Entity is Commerce.Domain.Entities.Base.BaseEntity &&
+        UpdateTimestamps();
+        return base.SaveChangesAsync(cancellationToken);
+    }
+
+    public override int SaveChanges()
+    {
+        UpdateTimestamps();
+        return base.SaveChanges();
+    }
+
+    private void UpdateTimestamps()
+    {
+        var entries = ChangeTracker
+            .Entries()
+            .Where(e => e.Entity is BaseEntity &&  // Now BaseEntity is recognized
                        (e.State == EntityState.Added || e.State == EntityState.Modified));
 
         foreach (var entry in entries)
         {
-            var entity = (Commerce.Domain.Entities.Base.BaseEntity)entry.Entity;
-            
+            var entity = (BaseEntity)entry.Entity;  // Now this casts correctly
+
             if (entry.State == EntityState.Added)
             {
                 entity.CreatedAt = DateTime.UtcNow;
             }
-            
+
             entity.UpdatedAt = DateTime.UtcNow;
         }
-
-        return base.SaveChangesAsync(cancellationToken);
     }
 }

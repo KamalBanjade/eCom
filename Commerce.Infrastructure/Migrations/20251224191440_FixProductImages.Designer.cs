@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using Commerce.Infrastructure.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 
@@ -12,9 +13,11 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace Commerce.Infrastructure.Migrations
 {
     [DbContext(typeof(CommerceDbContext))]
-    partial class CommerceDbContextModelSnapshot : ModelSnapshot
+    [Migration("20251224191440_FixProductImages")]
+    partial class FixProductImages
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -339,8 +342,7 @@ namespace Commerce.Infrastructure.Migrations
                         .HasColumnType("character varying(100)");
 
                     b.Property<Guid>("CategoryId")
-                        .HasColumnType("uuid")
-                        .HasColumnName("Category");
+                        .HasColumnType("uuid");
 
                     b.Property<DateTime>("CreatedAt")
                         .HasColumnType("timestamp with time zone");
@@ -386,16 +388,13 @@ namespace Commerce.Infrastructure.Migrations
                         .HasColumnType("timestamp with time zone");
 
                     b.Property<decimal?>("DiscountPrice")
-                        .HasPrecision(18, 2)
-                        .HasColumnType("numeric(18,2)");
+                        .HasColumnType("numeric");
 
                     b.Property<string>("ImageUrl")
                         .HasColumnType("text");
 
                     b.Property<bool>("IsActive")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("boolean")
-                        .HasDefaultValue(true);
+                        .HasColumnType("boolean");
 
                     b.Property<decimal>("Price")
                         .HasPrecision(18, 2)
@@ -410,10 +409,7 @@ namespace Commerce.Infrastructure.Migrations
                         .HasColumnType("character varying(50)");
 
                     b.Property<int>("StockQuantity")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("integer")
-                        .HasDefaultValue(0)
-                        .HasColumnName("AvailableStock");
+                        .HasColumnType("integer");
 
                     b.Property<DateTime>("UpdatedAt")
                         .HasColumnType("timestamp with time zone");
@@ -425,7 +421,7 @@ namespace Commerce.Infrastructure.Migrations
                     b.HasIndex("SKU")
                         .IsUnique();
 
-                    b.ToTable("ProductVariants", (string)null);
+                    b.ToTable("ProductVariants");
                 });
 
             modelBuilder.Entity("Commerce.Domain.Entities.Users.CustomerProfile", b =>

@@ -1,8 +1,11 @@
 using Commerce.Application.Features.Orders;
 using Commerce.Application.Features.Orders.DTOs;
+using Commerce.Application.Features.Carts;
 using Commerce.Domain.Entities.Orders;
 using Commerce.Domain.Enums;
 using Commerce.Infrastructure.Data;
+using Commerce.Infrastructure.Identity;
+using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
 
 namespace Commerce.Infrastructure.Services;
@@ -10,16 +13,72 @@ namespace Commerce.Infrastructure.Services;
 public class OrderService : IOrderService
 {
     private readonly CommerceDbContext _context;
+    private readonly ICartService _cartService;
+    private readonly UserManager<ApplicationUser> _userManager;
 
-    public OrderService(CommerceDbContext context)
+    public OrderService(CommerceDbContext context, ICartService cartService, UserManager<ApplicationUser> userManager)
     {
         _context = context;
+        _cartService = cartService;
+        _userManager = userManager;
     }
 
     public async Task<OrderDto> CreateOrderAsync(Guid userId, CancellationToken cancellationToken = default)
     {
-        // Placeholder logic - normally would convert Cart to Order
-        throw new NotImplementedException("Order creation logic to be implemented in Checkout Phase");
+        // 1. Retrieve Cart
+        // Note: Checkout is typically for authenticated users in this flow (ApplicationUser linked)
+        // If we support guest checkout later, we'd need anonymousId passed here. 
+        // For now, assume userId is present.
+        
+        var cartResponse = await _cartService.GetCartAsync(userId, null, cancellationToken);
+        if (!cartResponse.Success || cartResponse.Data == null || !cartResponse.Data.Items.Any())
+        {
+            throw new InvalidOperationException("Cart is empty or invalid");
+        }
+        
+        var cart = cartResponse.Data;
+        var user = await _userManager.FindByIdAsync(userId.ToString());
+        if (user?.CustomerProfileId == null) throw new InvalidOperationException("User profile not found");
+
+        // 2. Validate Inventory (Optional Placeholder)
+        // CheckStock(cart.Items);
+
+        // 3. Create Order
+        var order = new Order
+        {
+            CustomerProfileId = user.CustomerProfileId.Value,
+            OrderStatus = OrderStatus.Pending,
+            PaymentStatus = PaymentStatus.Pending,
+            CreatedAt = DateTime.UtcNow,
+            Items = cart.Items.Select(ci => new OrderItem
+            {
+                ProductVariantId = ci.ProductVariantId,
+                Quantity = ci.Quantity,
+               UnitPrice = ci.UnitPrice
+            }).ToList()
+        };
+
+        // Calc totals
+        order.SubTotal = order.Items.Sum(i => i.Quantity * i.UnitPrice);
+        order.TaxAmount = order.SubTotal * 0.1m; // 10% tax placeholder
+        order.TotalAmount = order.SubTotal + order.TaxAmount + order.ShippingAmount;
+        
+        // Generat Order Number
+        order.OrderNumber = $"ORD-{DateTime.UtcNow:yyyyMMdd}-{Guid.NewGuid().ToString().Substring(0, 8).ToUpper()}";
+        
+        // Add addresses (Placeholder - should come from request DTO or user profile)
+        order.ShippingAddress = new Domain.ValueObjects.Address("123 Main St", "City", "State", "12345", "Country");
+        order.BillingAddress = order.ShippingAddress;
+
+        // 4. Save to DB
+        _context.Orders.Add(order);
+        await _context.SaveChangesAsync(cancellationToken);
+
+        // 5. Clear Redis Cart
+        // Even if this fails, Order is safe. We log locally if needed.
+        await _cartService.ClearCartAsync(userId, null, cancellationToken);
+
+        return MapToDto(order);
     }
 
     public async Task<OrderDto?> GetOrderByIdAsync(Guid orderId, Guid userId, bool isAdmin, CancellationToken cancellationToken = default)

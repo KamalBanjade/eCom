@@ -10,29 +10,29 @@ public class ProductConfiguration : IEntityTypeConfiguration<Product>
     {
         builder.HasKey(p => p.Id);
 
+        builder.Property(p => p.CategoryId)
+               .HasColumnName("Category");
+               
         builder.Property(p => p.Name)
             .IsRequired()
             .HasMaxLength(200);
 
         builder.Property(p => p.Description)
-            .HasMaxLength(2000);
+            .HasMaxLength(1000);
 
         builder.Property(p => p.BasePrice)
-            .HasPrecision(18, 2);
-
-        builder.Property(p => p.Category)
-            .IsRequired()
-            .HasMaxLength(100);
+            .HasColumnType("decimal(18,2)");
 
         builder.Property(p => p.Brand)
             .HasMaxLength(100);
 
-        // Indexes
-        builder.HasIndex(p => p.Name);
-        builder.HasIndex(p => p.Category);
-        builder.HasIndex(p => p.IsActive);
+        // Configure relationship with Category
+        builder.HasOne(p => p.Category)
+            .WithMany(c => c.Products)
+            .HasForeignKey(p => p.CategoryId)
+            .OnDelete(DeleteBehavior.Restrict); // Prevent cascade delete issues
 
-        // Relationships
+        // One-to-many with ProductVariant
         builder.HasMany(p => p.Variants)
             .WithOne(v => v.Product)
             .HasForeignKey(v => v.ProductId)

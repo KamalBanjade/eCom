@@ -17,8 +17,8 @@ public class Cart : BaseEntity
     public ICollection<CartItem> Items { get; set; } = new List<CartItem>();
     public DateTime ExpiresAt { get; set; }
     
-    // Parameterless constructor for EF Core
-    private Cart() 
+    // Public parameterless constructor for Serialization
+    public Cart() 
     { 
         ExpiresAt = DateTime.UtcNow.AddDays(30); 
     }

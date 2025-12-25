@@ -31,7 +31,7 @@ public class OrderController : ControllerBase
         if (userId == null) return Unauthorized();
 
         var order = await _orderService.CreateOrderAsync(userId.Value, cancellationToken);
-        return CreatedAtAction(nameof(GetOrder), new { id = order.Id }, ApiResponse<OrderDto>.SuccessResponse(order, "Order created successfully"));
+        return base.CreatedAtAction(nameof(GetOrder), new { id = order.Id }, ApiResponse<OrderDto>.SuccessResponse(order, "Order created successfully"));
     }
 
     /// <summary>
@@ -53,6 +53,7 @@ public class OrderController : ControllerBase
     /// Retrieves a specific order by ID. Customers can only see their own orders.
     /// </summary>
     /// <param name="id">Order ID</param>
+    /// <param name="cancellationToken">Cancellation token</param>
     /// <returns>Order details</returns>
     [HttpGet("{id}")]
     [Authorize] // Any authenticated user can try, but service checks ownership
@@ -88,6 +89,7 @@ public class OrderController : ControllerBase
     /// </summary>
     /// <param name="id">Order ID</param>
     /// <param name="request">New status</param>
+    /// <param name="cancellationToken">Cancellation token</param>
     /// <returns>Updated order</returns>
     [HttpPut("{id}/status")]
     [Authorize(Roles = "Admin,SuperAdmin,Warehouse")]
@@ -98,8 +100,7 @@ public class OrderController : ControllerBase
     {
         try 
         {
-            var status = (OrderStatus)request.Status;
-            var order = await _orderService.UpdateOrderStatusAsync(id, status, cancellationToken);
+            var order = await _orderService.UpdateOrderStatusAsync(id, request.Status, cancellationToken);
             return Ok(ApiResponse<OrderDto>.SuccessResponse(order, "Order status updated"));
         }
         catch (KeyNotFoundException)
@@ -121,4 +122,9 @@ public class OrderController : ControllerBase
         }
         return null;
     }
+}
+
+public class UpdateOrderStatusRequest
+{
+    public OrderStatus Status { get; set; }
 }

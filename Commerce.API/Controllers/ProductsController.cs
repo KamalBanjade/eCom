@@ -1,7 +1,8 @@
-// File: Commerce.API/Controllers/ProductsController.cs
 using Commerce.Application.Features.Products;
 using Commerce.Application.Features.Products.DTOs;
 using Commerce.Application.Common.DTOs;
+using Commerce.Application.Common.Interfaces;
+using Commerce.API.DTOs; // <-- Add this
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 
@@ -12,104 +13,307 @@ namespace Commerce.API.Controllers;
 public class ProductsController : ControllerBase
 {
     private readonly IProductService _productService;
+    private readonly IImageStorageService _imageStorageService;
 
-    public ProductsController(IProductService productService)
+    public ProductsController(IProductService productService, IImageStorageService imageStorageService)
     {
         _productService = productService;
+        _imageStorageService = imageStorageService;
     }
+
+    // ==================== Products ====================
 
     [HttpGet]
     [AllowAnonymous]
-    public async Task<ActionResult<ApiResponse<IEnumerable<ProductDto>>>> GetAll(CancellationToken cancellationToken)
+    public async Task<ActionResult<ApiResponse<IEnumerable<ProductResponse>>>> GetAll(CancellationToken cancellationToken)
     {
         var products = await _productService.GetAllProductsAsync(cancellationToken);
-        return Ok(ApiResponse<IEnumerable<ProductDto>>.SuccessResponse(products));
+        return Ok(ApiResponse<IEnumerable<ProductResponse>>.SuccessResponse(products));
     }
 
     [HttpGet("{id}")]
     [AllowAnonymous]
-    public async Task<ActionResult<ApiResponse<ProductDto>>> GetById(Guid id, CancellationToken cancellationToken)
+    public async Task<ActionResult<ApiResponse<ProductResponse>>> GetById(Guid id, CancellationToken cancellationToken)
     {
         var product = await _productService.GetProductByIdAsync(id, cancellationToken);
         if (product == null)
-            return NotFound(ApiResponse<ProductDto>.ErrorResponse("Product not found"));
+            return NotFound(ApiResponse<ProductResponse>.ErrorResponse("Product not found"));
 
-        return Ok(ApiResponse<ProductDto>.SuccessResponse(product));
+        return Ok(ApiResponse<ProductResponse>.SuccessResponse(product));
     }
 
     [HttpPost]
     [Authorize(Roles = "Admin,SuperAdmin")]
-    public async Task<ActionResult<ApiResponse<ProductDto>>> Create(
+    public async Task<ActionResult<ApiResponse<ProductResponse>>> Create(
         [FromBody] CreateProductRequest request,
         CancellationToken cancellationToken)
     {
-        var product = await _productService.CreateProductAsync(
-            request.Name,
-            request.Description,
-            request.Price,
-            cancellationToken);
-
-        return CreatedAtAction(
-            nameof(GetById),
-            new { id = product.Id },
-            ApiResponse<ProductDto>.SuccessResponse(product, "Product created successfully"));
+        try
+        {
+            var product = await _productService.CreateProductAsync(request, cancellationToken);
+            return CreatedAtAction(
+                nameof(GetById),
+                new { id = product.Id },
+                ApiResponse<ProductResponse>.SuccessResponse(product, "Product created successfully"));
+        }
+        catch (KeyNotFoundException ex)
+        {
+            return BadRequest(ApiResponse<ProductResponse>.ErrorResponse(ex.Message));
+        }
     }
+
+    [HttpPut("{id}")]
+    [Authorize(Roles = "Admin,SuperAdmin")]
+    public async Task<ActionResult<ApiResponse<ProductResponse>>> Update(
+        Guid id,
+        [FromBody] UpdateProductRequest request,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var product = await _productService.UpdateProductAsync(id, request, cancellationToken);
+            if (product == null)
+                return NotFound(ApiResponse<ProductResponse>.ErrorResponse("Product not found"));
+
+            return Ok(ApiResponse<ProductResponse>.SuccessResponse(product, "Product updated successfully"));
+        }
+        catch (KeyNotFoundException ex)
+        {
+            return BadRequest(ApiResponse<ProductResponse>.ErrorResponse(ex.Message));
+        }
+    }
+
+    [HttpDelete("{id}")]
+    [Authorize(Roles = "Admin,SuperAdmin")]
+    public async Task<ActionResult<ApiResponse<bool>>> Delete(Guid id, CancellationToken cancellationToken)
+    {
+        var result = await _productService.DeleteProductAsync(id, cancellationToken);
+        if (!result)
+            return NotFound(ApiResponse<bool>.ErrorResponse("Product not found"));
+
+        return Ok(ApiResponse<bool>.SuccessResponse(true, "Product deleted successfully"));
+    }
+
+    // ==================== Variants ====================
 
     [HttpPost("{productId}/variants")]
     [Authorize(Roles = "Admin,SuperAdmin")]
-    public async Task<ActionResult<ApiResponse<ProductVariantDto>>> CreateVariant(
+    public async Task<ActionResult<ApiResponse<ProductVariantResponse>>> CreateVariant(
         Guid productId,
         [FromBody] CreateProductVariantRequest request,
         CancellationToken cancellationToken)
     {
-        var variant = await _productService.CreateProductVariantAsync(
-            productId,
-            request.SKU,
-            request.Price,
-            request.Attributes,
-            cancellationToken);
-
-        return CreatedAtAction(
-            nameof(GetVariantById),
-            new { id = variant.Id },
-            ApiResponse<ProductVariantDto>.SuccessResponse(variant, "Variant created successfully"));
+        try
+        {
+            var variant = await _productService.CreateVariantAsync(productId, request, cancellationToken);
+            return CreatedAtAction(
+                nameof(GetVariantById),
+                new { id = variant.Id },
+                ApiResponse<ProductVariantResponse>.SuccessResponse(variant, "Variant created successfully"));
+        }
+        catch (KeyNotFoundException ex)
+        {
+            return NotFound(ApiResponse<ProductVariantResponse>.ErrorResponse(ex.Message));
+        }
     }
-    [HttpGet("variants/{id}")]
-[AllowAnonymous]
-public async Task<ActionResult<ApiResponse<ProductVariantDto>>> GetVariantById(Guid id, CancellationToken cancellationToken)
-{
-    var variant = await _productService.GetProductVariantByIdAsync(id, cancellationToken);
-    if (variant == null)
-        return NotFound(ApiResponse<ProductVariantDto>.ErrorResponse("Variant not found"));
 
-    return Ok(ApiResponse<ProductVariantDto>.SuccessResponse(variant));
-}
+    [HttpGet("variants/{id}")]
+    [AllowAnonymous]
+    public async Task<ActionResult<ApiResponse<ProductVariantResponse>>> GetVariantById(Guid id, CancellationToken cancellationToken)
+    {
+        var variant = await _productService.GetVariantByIdAsync(id, cancellationToken);
+        if (variant == null)
+            return NotFound(ApiResponse<ProductVariantResponse>.ErrorResponse("Variant not found"));
+
+        return Ok(ApiResponse<ProductVariantResponse>.SuccessResponse(variant));
+    }
+
+    [HttpPut("variants/{id}")]
+    [Authorize(Roles = "Admin,SuperAdmin")]
+    public async Task<ActionResult<ApiResponse<ProductVariantResponse>>> UpdateVariant(
+        Guid id,
+        [FromBody] UpdateProductVariantRequest request,
+        CancellationToken cancellationToken)
+    {
+        var variant = await _productService.UpdateVariantAsync(id, request, cancellationToken);
+        if (variant == null)
+            return NotFound(ApiResponse<ProductVariantResponse>.ErrorResponse("Variant not found"));
+
+        return Ok(ApiResponse<ProductVariantResponse>.SuccessResponse(variant, "Variant updated successfully"));
+    }
+
+    [HttpDelete("variants/{id}")]
+    [Authorize(Roles = "Admin,SuperAdmin")]
+    public async Task<ActionResult<ApiResponse<bool>>> DeleteVariant(Guid id, CancellationToken cancellationToken)
+    {
+        var result = await _productService.DeleteVariantAsync(id, cancellationToken);
+        if (!result)
+            return NotFound(ApiResponse<bool>.ErrorResponse("Variant not found"));
+
+        return Ok(ApiResponse<bool>.SuccessResponse(true, "Variant deleted successfully"));
+    }
 
     [HttpGet("{productId}/variants")]
     [AllowAnonymous]
-    public async Task<ActionResult<ApiResponse<IEnumerable<ProductVariantDto>>>> GetVariantsByProduct(
+    public async Task<ActionResult<ApiResponse<IEnumerable<ProductVariantResponse>>>> GetVariantsByProduct(
         Guid productId,
         CancellationToken cancellationToken)
     {
-    var variants = await _productService.GetVariantsByProductIdAsync(productId, cancellationToken);
-
-    if (!variants.Any())
-    {
-        return NotFound(ApiResponse<IEnumerable<ProductVariantDto>>.ErrorResponse("No variants found for this product"));
+        var variants = await _productService.GetVariantsByProductIdAsync(productId, cancellationToken);
+        return Ok(ApiResponse<IEnumerable<ProductVariantResponse>>.SuccessResponse(variants));
     }
 
-    return Ok(ApiResponse<IEnumerable<ProductVariantDto>>.SuccessResponse(variants));
-}
-}   
-public class CreateProductRequest
-{
-    public string Name { get; set; } = string.Empty;
-    public string Description { get; set; } = string.Empty;
-    public decimal Price { get; set; }
-}
-public class CreateProductVariantRequest
-{
-    public string SKU { get; set; } = string.Empty;
-    public decimal Price { get; set; }
-    public Dictionary<string, string> Attributes { get; set; } = new();
+    // ==================== Categories ====================
+
+    [HttpGet("categories")]
+    [AllowAnonymous]
+    public async Task<ActionResult<ApiResponse<IEnumerable<CategoryDto>>>> GetCategories(CancellationToken cancellationToken)
+    {
+        var categories = await _productService.GetAllCategoriesAsync(cancellationToken);
+        return Ok(ApiResponse<IEnumerable<CategoryDto>>.SuccessResponse(categories));
+    }
+
+    // ==================== Product Images ====================
+
+    /// <summary>
+    /// Upload multiple product images - Admin only
+    /// </summary>
+    [HttpPost("{id}/images")]
+    [Authorize(Roles = "Admin,SuperAdmin")]
+    [Consumes("multipart/form-data")]
+    public async Task<ActionResult<ApiResponse<List<string>>>> UploadProductImages(
+        Guid id,
+        [FromForm] UploadProductImagesRequest request,
+        CancellationToken cancellationToken)
+    {
+        var files = request.Files;
+
+        if (files == null || files.Count == 0)
+            return BadRequest(ApiResponse<List<string>>.ErrorResponse("No files uploaded"));
+
+        const long maxFileSize = 5 * 1024 * 1024; // 5MB
+        var allowedExtensions = new[] { ".jpg", ".jpeg", ".png", ".webp" };
+
+        foreach (var file in files)
+        {
+            if (file.Length > maxFileSize)
+                return BadRequest(ApiResponse<List<string>>.ErrorResponse($"File {file.FileName} exceeds 5MB limit"));
+
+            var extension = Path.GetExtension(file.FileName).ToLowerInvariant();
+            if (!allowedExtensions.Contains(extension))
+                return BadRequest(ApiResponse<List<string>>.ErrorResponse($"File {file.FileName} has invalid format. Allowed: JPG, PNG, WebP"));
+        }
+
+        var product = await _productService.GetProductByIdAsync(id, cancellationToken);
+        if (product == null)
+            return NotFound(ApiResponse<List<string>>.ErrorResponse("Product not found"));
+
+        var uploadedUrls = new List<string>();
+        foreach (var file in files)
+        {
+            await using var stream = file.OpenReadStream();
+            var imageUrl = await _imageStorageService.UploadImageAsync(
+                stream,
+                file.FileName,
+                $"products/{id}",
+                cancellationToken
+            );
+            uploadedUrls.Add(imageUrl);
+        }
+
+        var dbResult = await _productService.AddProductImagesAsync(id, uploadedUrls, cancellationToken);
+        if (!dbResult)
+            return StatusCode(500, ApiResponse<List<string>>.ErrorResponse("Files uploaded to Cloudinary but failed to update product database."));
+
+        return Ok(ApiResponse<List<string>>.SuccessResponse(uploadedUrls, $"{uploadedUrls.Count} image(s) uploaded successfully and saved to database"));
+    }
+
+    /// <summary>
+    /// Delete product image - Admin only
+    /// </summary>
+    [HttpDelete("{id}/images")]
+    [Authorize(Roles = "Admin,SuperAdmin")]
+    public async Task<ActionResult<ApiResponse<bool>>> DeleteProductImage(
+        Guid id,
+        [FromQuery] string imageUrl,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(imageUrl))
+            return BadRequest(ApiResponse<bool>.ErrorResponse("Image URL is required"));
+
+        var deleted = await _imageStorageService.DeleteImageAsync(imageUrl, cancellationToken);
+        if (!deleted)
+            return NotFound(ApiResponse<bool>.ErrorResponse("Image not found in storage or already deleted"));
+
+        var dbResult = await _productService.RemoveProductImageAsync(id, imageUrl, cancellationToken);
+        if (!dbResult)
+            return BadRequest(ApiResponse<bool>.ErrorResponse("Image removed from storage but failed to update product database or image not found in product list"));
+
+        return Ok(ApiResponse<bool>.SuccessResponse(true, "Image deleted successfully from storage and database"));
+    }
+
+    /// <summary>
+    /// Upload variant-specific image - Admin only
+    /// </summary>
+    [HttpPost("variants/{id}/image")]
+    [Authorize(Roles = "Admin,SuperAdmin")]
+    [Consumes("multipart/form-data")]
+    public async Task<ActionResult<ApiResponse<string>>> UploadVariantImage(
+        Guid id,
+        [FromForm] UploadVariantImageRequest request,
+        CancellationToken cancellationToken)
+    {
+        var file = request.File;
+
+        if (file == null || file.Length == 0)
+            return BadRequest(ApiResponse<string>.ErrorResponse("No file uploaded"));
+
+        const long maxFileSize = 5 * 1024 * 1024; // 5MB
+        var allowedExtensions = new[] { ".jpg", ".jpeg", ".png", ".webp" };
+
+        if (file.Length > maxFileSize)
+            return BadRequest(ApiResponse<string>.ErrorResponse("File exceeds 5MB limit"));
+
+        var extension = Path.GetExtension(file.FileName).ToLowerInvariant();
+        if (!allowedExtensions.Contains(extension))
+            return BadRequest(ApiResponse<string>.ErrorResponse("Invalid file format. Allowed: JPG, PNG, WebP"));
+
+        await using var stream = file.OpenReadStream();
+        var imageUrl = await _imageStorageService.UploadImageAsync(
+            stream,
+            file.FileName,
+            $"variants/{id}",
+            cancellationToken
+        );
+
+        var dbResult = await _productService.UpdateVariantImageAsync(id, imageUrl, cancellationToken);
+        if (!dbResult)
+            return StatusCode(500, ApiResponse<string>.ErrorResponse("File uploaded to Cloudinary but failed to update variant database."));
+
+        return Ok(ApiResponse<string>.SuccessResponse(imageUrl, "Variant image uploaded and saved successfully"));
+    }
+
+    /// <summary>
+    /// Delete variant image - Admin only
+    /// </summary>
+    [HttpDelete("variants/{id}/image")]
+    [Authorize(Roles = "Admin,SuperAdmin")]
+    public async Task<ActionResult<ApiResponse<bool>>> DeleteVariantImage(
+        Guid id,
+        [FromQuery] string imageUrl,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(imageUrl))
+            return BadRequest(ApiResponse<bool>.ErrorResponse("Image URL is required"));
+
+        var deleted = await _imageStorageService.DeleteImageAsync(imageUrl, cancellationToken);
+        if (!deleted)
+            return NotFound(ApiResponse<bool>.ErrorResponse("Image not found in storage or already deleted"));
+
+        var dbResult = await _productService.RemoveVariantImageAsync(id, cancellationToken);
+        if (!dbResult)
+            return BadRequest(ApiResponse<bool>.ErrorResponse("Image removed from storage but failed to update variant database"));
+
+        return Ok(ApiResponse<bool>.SuccessResponse(true, "Variant image deleted successfully from storage and database"));
+    }
 }

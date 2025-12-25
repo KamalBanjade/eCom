@@ -22,6 +22,7 @@ public class AuthController : ControllerBase
     /// Registers a new user with 'Customer' role
     /// </summary>
     /// <param name="request">Registration details including email, password, and profile info</param>
+    /// <param name="cancellationToken">Cancellation token</param>
     /// <returns>Auth response with tokens</returns>
     [HttpPost("register")]
     public async Task<ActionResult<ApiResponse<AuthResponse>>> Register(
@@ -40,6 +41,7 @@ public class AuthController : ControllerBase
     /// Authenticates a user and returns JWT tokens
     /// </summary>
     /// <param name="request">Login credentials</param>
+    /// <param name="cancellationToken">Cancellation token</param>
     /// <returns>Auth response or MFA requirement signal</returns>
     [HttpPost("login")]
     public async Task<ActionResult<ApiResponse<AuthResponse>>> Login(
@@ -58,6 +60,7 @@ public class AuthController : ControllerBase
     /// Refreshes an expired access token using a valid refresh token
     /// </summary>
     /// <param name="request">The refresh token</param>
+    /// <param name="cancellationToken">Cancellation token</param>
     /// <returns>New access and refresh tokens</returns>
     [HttpPost("refresh-token")]
     public async Task<ActionResult<ApiResponse<AuthResponse>>> RefreshToken(
@@ -76,6 +79,7 @@ public class AuthController : ControllerBase
     /// Revokes a refresh token, preventing its future use
     /// </summary>
     /// <param name="request">The token to revoke</param>
+    /// <param name="cancellationToken">Cancellation token</param>
     /// <returns>Success status</returns>
     [HttpPost("revoke-token")]
     public async Task<ActionResult<ApiResponse<bool>>> RevokeToken(
@@ -99,6 +103,7 @@ public class AuthController : ControllerBase
     /// Initiates password reset flow by sending an email with a token
     /// </summary>
     /// <param name="request">Email address to reset</param>
+    /// <param name="cancellationToken">Cancellation token</param>
     /// <returns>Success message</returns>
     [HttpPost("forgot-password")]
     public async Task<ActionResult<ApiResponse<string>>> ForgotPassword(
@@ -117,6 +122,7 @@ public class AuthController : ControllerBase
     /// Resets password using the token received via email
     /// </summary>
     /// <param name="request">Token and new password</param>
+    /// <param name="cancellationToken">Cancellation token</param>
     /// <returns>Success message</returns>
     [HttpPost("reset-password")]
     public async Task<ActionResult<ApiResponse<string>>> ResetPassword(
@@ -160,6 +166,7 @@ public class AuthController : ControllerBase
     /// Verifies the TOTP code and activates MFA if correct
     /// </summary>
     /// <param name="request">The 6-digit TOTP code</param>
+    /// <param name="cancellationToken">Cancellation token</param>
     /// <returns>Success status</returns>
     [HttpPost("verify-mfa")]
     [Authorize(Roles = "Admin,SuperAdmin")]
