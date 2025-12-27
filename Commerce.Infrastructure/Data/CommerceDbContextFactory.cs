@@ -81,11 +81,12 @@ public class CommerceDbContextFactory : IDesignTimeDbContextFactory<CommerceDbCo
              }
         }
         
-        // 3. Hardcoded fallback for local dev if everything else fails (to unblock migration)
+        // 3. Fail if no connection string found - enforce proper .env configuration
         if (string.IsNullOrEmpty(connectionString))
         {
-            // Default usage from previous context or standard local defaults
-            connectionString = "Host=localhost;Database=ecommerce_db;Username=postgres;Password=postgres";
+            throw new InvalidOperationException(
+                "No database connection string found. Please ensure your .env file exists in the solution root " +
+                "and contains 'ConnectionStrings__DefaultConnection=<your-connection-string>' or 'DATABASE_URL=<your-connection-string>'.");
         }
 
         var optionsBuilder = new DbContextOptionsBuilder<CommerceDbContext>();
