@@ -519,6 +519,46 @@ public class OrderService : IOrderService
         return (true, null);
     }
 
+    public async Task<ApiResponse<OrderDto>> CancelOrderAsync(
+        Guid orderId, 
+        Guid userId, 
+        CancellationToken cancellationToken = default)
+    {
+        var order = await _context.Orders
+            .Include(o => o.CustomerProfile)
+            .Include(o => o.Items)
+            .FirstOrDefaultAsync(o => o.Id == orderId, cancellationToken);
+
+        if (order == null)
+            return ApiResponse<OrderDto>.ErrorResponse("Order not found");
+
+        // Validate Ownership
+        var userProfile = await _context.CustomerProfiles
+            .FirstOrDefaultAsync(p => p.ApplicationUserId == userId.ToString(), cancellationToken);
+
+        if (userProfile == null || order.CustomerProfileId != userProfile.Id)
+            return ApiResponse<OrderDto>.ErrorResponse("Unauthorized to cancel this order");
+
+        // Validate Status
+        if (order.OrderStatus == OrderStatus.Shipped || order.OrderStatus == OrderStatus.Delivered)
+            return ApiResponse<OrderDto>.ErrorResponse("Cannot cancel order that has already been shipped or delivered");
+
+        if (order.OrderStatus == OrderStatus.Cancelled)
+            return ApiResponse<OrderDto>.ErrorResponse("Order is already cancelled");
+
+        // 3. Update Status
+        order.OrderStatus = OrderStatus.Cancelled;
+        order.CancelledAt = DateTime.UtcNow;
+
+        // Refund Logic:
+        // If Khalti & Completed -> Refund Required (Implied by Cancelled + PaymentStatus.Completed)
+        // If COD -> No refund needed, payment status stays NotRequired
+        
+        await _context.SaveChangesAsync(cancellationToken);
+
+        return ApiResponse<OrderDto>.SuccessResponse(MapToDto(order), "Order cancelled successfully");
+    }
+
     private static OrderDto MapToDto(Order order)
     {
         return new OrderDto
@@ -555,3 +595,4 @@ public class OrderService : IOrderService
         };
     }
 }
+

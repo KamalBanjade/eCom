@@ -47,6 +47,30 @@ public class OrdersController : ControllerBase
     }
 
     /// <summary>
+    /// Cancels an existing order if it has not been shipped
+    /// </summary>
+    /// <param name="id">Order ID</param>
+    /// <param name="cancellationToken">Cancellation token</param>
+    /// <returns>Updated order details</returns>
+    [HttpPost("{id}/cancel")]
+    [Authorize(Roles = "Customer")]
+    public async Task<ActionResult<ApiResponse<OrderDto>>> CancelOrder(
+        Guid id,
+        CancellationToken cancellationToken)
+    {
+        var userId = GetUserId();
+        if (userId == null)
+            return Unauthorized(ApiResponse<OrderDto>.ErrorResponse("User not authenticated"));
+
+        var result = await _orderService.CancelOrderAsync(id, userId.Value, cancellationToken);
+
+        if (!result.Success)
+            return BadRequest(result);
+
+        return Ok(result);
+    }
+
+    /// <summary>
     /// Retrieves all orders for the currently authenticated customer
     /// </summary>
     /// <param name="cancellationToken">Cancellation token</param>

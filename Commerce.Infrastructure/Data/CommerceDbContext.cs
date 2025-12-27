@@ -34,6 +34,7 @@ public class CommerceDbContext : IdentityDbContext<ApplicationUser>
     public DbSet<PasswordResetToken> PasswordResetTokens => Set<PasswordResetToken>();
     public DbSet<Coupon> Coupons => Set<Coupon>();
     public DbSet<PaymentAuditLog> PaymentAuditLogs => Set<PaymentAuditLog>();
+    public DbSet<ReturnRequest> Returns => Set<ReturnRequest>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {

@@ -16,7 +16,7 @@ public class Order : BaseEntity
     public CustomerProfile CustomerProfile { get; set; } = null!;
     
     public OrderStatus OrderStatus { get; set; } = OrderStatus.PendingPayment;
-    public PaymentStatus PaymentStatus { get; set; } = PaymentStatus.Pending;
+    public PaymentStatus PaymentStatus { get; set; } = PaymentStatus.NotRequired;
     public PaymentMethod PaymentMethod { get; set; } = PaymentMethod.CashOnDelivery;
     
     public decimal SubTotal { get; set; }

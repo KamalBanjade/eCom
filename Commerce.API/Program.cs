@@ -92,6 +92,7 @@ builder.Services.AddScoped<IImageStorageService, CloudinaryImageStorageService>(
 builder.Services.AddScoped<IPricingService, PricingService>();
 builder.Services.AddScoped<ICouponService, CouponService>();
 builder.Services.AddScoped<IUserProfileService, UserProfileService>();
+builder.Services.AddScoped<IReturnService, ReturnService>();
 
 // 5. Cloudinary Configuration
 builder.Services.Configure<CloudinarySettings>(builder.Configuration.GetSection("Cloudinary"));
@@ -101,6 +102,12 @@ builder.Services.Configure<KhaltiSettings>(builder.Configuration.GetSection("Kha
 
 builder.Services.AddHttpClient<IKhaltiPaymentService, KhaltiPaymentService>();
 builder.Services.AddHostedService<PaymentReconciliationService>();
+
+builder.Services.AddAuthorization(options =>
+{
+    options.AddPolicy("RequireAdminRole", policy =>
+        policy.RequireRole(UserRoles.Admin, UserRoles.SuperAdmin));
+});
 
 // 5. API Configuration
 builder.Services.AddControllers();
