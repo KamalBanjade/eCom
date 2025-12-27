@@ -15,6 +15,7 @@ public class Cart : BaseEntity
     public string? AnonymousId { get; private set; }
     
     public ICollection<CartItem> Items { get; set; } = new List<CartItem>();
+    public string? AppliedCouponCode { get; set; }
     public DateTime ExpiresAt { get; set; }
     
     // Public parameterless constructor for Serialization

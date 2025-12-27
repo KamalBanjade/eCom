@@ -4,6 +4,7 @@ using Commerce.Domain.Entities.Inventory;
 using Commerce.Domain.Entities.Orders;
 using Commerce.Domain.Entities.Products;
 using Commerce.Domain.Entities.Users;
+using Commerce.Domain.Entities.Sales;
 using Commerce.Infrastructure.Identity;
 using Microsoft.AspNetCore.Identity.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore;
@@ -30,6 +31,7 @@ public class CommerceDbContext : IdentityDbContext<ApplicationUser>
     public DbSet<OrderItem> OrderItems => Set<OrderItem>();
     public DbSet<RefreshToken> RefreshTokens => Set<RefreshToken>();
     public DbSet<PasswordResetToken> PasswordResetTokens => Set<PasswordResetToken>();
+    public DbSet<Coupon> Coupons => Set<Coupon>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {

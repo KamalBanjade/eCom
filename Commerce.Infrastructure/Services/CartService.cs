@@ -1,13 +1,17 @@
-using System.Text.Json;
-using Commerce.Application.Common.DTOs;     // ← This is the key one!
+using Commerce.Application.Common.DTOs;
+using Commerce.Application.Common.Interfaces;
+using Commerce.Application.Features.Carts;
 using Commerce.Domain.Entities.Carts;
 using Commerce.Domain.Entities.Products;
 using Commerce.Infrastructure.Data;
 using Commerce.Infrastructure.Identity;
+using Commerce.Domain.Entities.Sales;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
-using Commerce.Application.Features.Carts;
 using StackExchange.Redis;
+using System.Text.Json;
+
+using System.Text.Json.Serialization;
 
 namespace Commerce.Infrastructure.Services;
 
@@ -16,22 +20,33 @@ public class CartService : ICartService
     private readonly IConnectionMultiplexer _redis;
     private readonly UserManager<ApplicationUser> _userManager;
     private readonly CommerceDbContext _context;
+    private readonly ICouponService _couponService; // ← NEW
     private readonly IDatabase _db;
-    private const int CartTtlSeconds = 86400; // 24 hours
+    private const int CartTtlSeconds = 86400 * 30; // 30 days
 
     private readonly JsonSerializerOptions _jsonOptions = new()
     {
-        ReferenceHandler = System.Text.Json.Serialization.ReferenceHandler.IgnoreCycles
+        ReferenceHandler = ReferenceHandler.IgnoreCycles
     };
 
+    private decimal ApplyCouponDiscount(decimal amount, Coupon coupon)
+{
+    if (coupon.DiscountType == DiscountType.Percentage)
+    {
+        return amount - amount * (coupon.DiscountValue / 100m);
+    }
+    return amount - coupon.DiscountValue;
+}
     public CartService(
         IConnectionMultiplexer redis,
         UserManager<ApplicationUser> userManager,
-        CommerceDbContext context)
+        CommerceDbContext context,
+        ICouponService couponService) // ← INJECT
     {
         _redis = redis;
         _userManager = userManager;
         _context = context;
+        _couponService = couponService;
         _db = _redis.GetDatabase();
     }
 
@@ -64,7 +79,6 @@ public class CartService : ICartService
     {
         decimal subtotal = 0;
         int totalItems = 0;
-
         var responseItems = new List<CartItemResponse>();
 
         if (cart.Items.Any())
@@ -78,10 +92,11 @@ public class CartService : ICartService
 
             foreach (var item in cart.Items)
             {
-                subtotal += item.PriceAtAdd * item.Quantity;
-                totalItems += item.Quantity;
-
                 var variant = variants.GetValueOrDefault(item.ProductVariantId);
+                decimal price = variant?.DiscountPrice ?? variant?.Price ?? item.PriceAtAdd;
+
+                subtotal += price * item.Quantity;
+                totalItems += item.Quantity;
 
                 responseItems.Add(new CartItemResponse
                 {
@@ -91,9 +106,33 @@ public class CartService : ICartService
                         ? string.Join(" - ", variant.Attributes.Values.Where(v => !string.IsNullOrEmpty(v)))
                         : variant?.SKU ?? string.Empty,
                     ImageUrl = variant?.ImageUrl ?? string.Empty,
-                    UnitPrice = item.PriceAtAdd,
-                    Quantity = item.Quantity
+                    UnitPrice = price,
+                    Quantity = item.Quantity,
                 });
+            }
+        }
+
+        // === COUPON CALCULATION ===
+        // === COUPON CALCULATION ===
+        var appliedCoupon = cart.AppliedCouponCode;
+        decimal discountAmount = 0m;
+        decimal total = subtotal;
+
+        if (!string.IsNullOrEmpty(appliedCoupon))
+        {
+            var coupon = await _couponService.ValidateCouponAsync(appliedCoupon, cancellationToken);
+            if (coupon != null)
+            {
+                total = ApplyCouponDiscount(subtotal, coupon);
+                total = Math.Max(0, total);
+                discountAmount = subtotal - total;
+            }
+            else
+            {
+                // Invalid or expired coupon — clean it up
+                cart.AppliedCouponCode = null;
+                await _db.StringSetAsync(key, JsonSerializer.Serialize(cart, _jsonOptions), TimeSpan.FromSeconds(CartTtlSeconds));
+                appliedCoupon = null;
             }
         }
 
@@ -101,6 +140,9 @@ public class CartService : ICartService
         {
             CartId = key,
             Subtotal = subtotal,
+            Total = total,
+            DiscountAmount = discountAmount,
+            AppliedCoupon = appliedCoupon,
             TotalItems = totalItems,
             Items = responseItems,
             ExpiresAt = DateTime.UtcNow.AddSeconds(CartTtlSeconds)
@@ -331,6 +373,71 @@ public class CartService : ICartService
         catch (RedisConnectionException)
         {
             return ApiResponse<bool>.ErrorResponse("Cart service unavailable");
+        }
+    }
+    public async Task<ApiResponse<CartResponse>> ApplyCouponAsync(
+        Guid? applicationUserId,
+        string? anonymousId,
+        string couponCode,
+        CancellationToken cancellationToken = default)
+    {
+        var customerId = await GetCustomerProfileIdAsync(applicationUserId);
+        if (customerId == null && string.IsNullOrEmpty(anonymousId))
+            return ApiResponse<CartResponse>.ErrorResponse("No cart identifier provided");
+
+        var key = GetCartKey(customerId, anonymousId);
+
+        try
+        {
+            var data = await _db.StringGetAsync(key);
+            if (data.IsNullOrEmpty)
+                 return ApiResponse<CartResponse>.ErrorResponse("Cart not found");
+
+            Cart cart = JsonSerializer.Deserialize<Cart>(data!, _jsonOptions) ?? CreateNewCart(customerId, anonymousId);
+            
+            // Calculate subtotal for validation
+            // Note: We need accurate subtotal. MapToResponse does this but we haven't called it yet.
+            // Let's iterate items similar to GetCart logic or just use stored cart if it has cached subtotal (it doesn't seem to persist subtotal).
+            // We need to fetch variants to get prices. This duplicates logic in MapToResponseAsync.
+            // BETTER: Call GetCartAsync first? 
+            // If we call GetCartAsync, it calculates totals. But it also applies EXISTING coupon. 
+            // We want to apply NEW coupon.
+            
+            // Let's check subtotal roughly or fetch prices. 
+            // For now, let's assume we can fetch the cart response w/o coupon to get subtotal.
+            // But GetCartAsync will read "AppliedCouponCode" from Redis.
+            // So we might need to calculate manually or temporarily rely on pre-check.
+            
+            // Simpler approach: MapToResponseAsync does the heavy lifting.
+            // But MapToResponseAsync requires `variants` lookup.
+            
+            // Let's defer to CouponService validation. It needs 'orderSubtotal'.
+            // Use MapToResponseAsync internally to get the object with totals.
+            var tempResponse = await MapToResponseAsync(cart, key, cancellationToken);
+            decimal currentSubtotal = tempResponse.Subtotal;
+            
+            try 
+            {
+               await _couponService.ValidateAndRegisterUsageAsync(couponCode, currentSubtotal, cancellationToken);
+            }
+            catch (Exception ex)
+            {
+                // If invalid, clear any existing coupon just in case?
+                // Or simply return error.
+                return ApiResponse<CartResponse>.ErrorResponse(ex.Message);
+            }
+
+            // Store coupon code in cart object if validation passed
+            cart.AppliedCouponCode = couponCode.Trim().ToUpperInvariant();
+            await _db.StringSetAsync(key, JsonSerializer.Serialize(cart, _jsonOptions), TimeSpan.FromSeconds(CartTtlSeconds));
+
+            // Return updated cart with calculated discount
+            var cartResponse = await GetCartAsync(applicationUserId, anonymousId, cancellationToken);
+            return cartResponse;
+        }
+        catch (RedisConnectionException)
+        {
+            return ApiResponse<CartResponse>.ErrorResponse("Cart service unavailable");
         }
     }
 }

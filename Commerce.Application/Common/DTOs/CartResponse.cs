@@ -4,6 +4,9 @@ public class CartResponse
 {
     public string CartId { get; set; } = string.Empty;
     public decimal Subtotal { get; set; }
+    public decimal Total { get; set; }                 
+    public decimal DiscountAmount { get; set; }        
+    public string? AppliedCoupon { get; set; }
     public int TotalItems { get; set; }
     public List<CartItemResponse> Items { get; set; } = new();
     public DateTime ExpiresAt { get; set; }

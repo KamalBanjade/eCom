@@ -1,4 +1,5 @@
 using Commerce.Application.Common.DTOs;
+using Commerce.Domain.Entities.Carts;
 
 namespace Commerce.Application.Features.Carts;
 
@@ -30,5 +31,12 @@ public interface ICartService
     Task<ApiResponse<bool>> TransferAnonymousCartToCustomerAsync(
         string anonymousId,
         Guid applicationUserId,
+        CancellationToken cancellationToken = default);
+
+    // ← NEW: Apply coupon to cart
+    Task<ApiResponse<CartResponse>> ApplyCouponAsync(
+        Guid? applicationUserId,
+        string? anonymousId,
+        string couponCode,
         CancellationToken cancellationToken = default);
 }

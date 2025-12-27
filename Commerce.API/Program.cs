@@ -80,12 +80,15 @@ builder.Services.AddScoped<IUnitOfWork, UnitOfWork>();
 builder.Services.AddScoped<IEmailService, EmailService>();
 builder.Services.AddScoped<ISecurityLogger, SecurityLogger>();
 builder.Services.AddScoped<IImageStorageService, CloudinaryImageStorageService>();
+builder.Services.AddScoped<IPricingService, PricingService>();
+builder.Services.AddScoped<ICouponService, CouponService>();
 
 // 5. Cloudinary Configuration
 builder.Services.Configure<CloudinarySettings>(builder.Configuration.GetSection("Cloudinary"));
 
 // 5. API Configuration
 builder.Services.AddControllers();
+builder.Services.AddHttpContextAccessor();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen(c =>
 {
