@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using Commerce.Infrastructure.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 
@@ -12,9 +13,11 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace Commerce.Infrastructure.Migrations
 {
     [DbContext(typeof(CommerceDbContext))]
-    partial class CommerceDbContextModelSnapshot : ModelSnapshot
+    [Migration("20251227075048_Phase4_OrderEnhancements")]
+    partial class Phase4_OrderEnhancements
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -189,7 +192,7 @@ namespace Commerce.Infrastructure.Migrations
                     b.Property<DateTime>("CreatedAt")
                         .HasColumnType("timestamp with time zone");
 
-                    b.Property<Guid?>("CustomerProfileId")
+                    b.Property<Guid>("CustomerProfileId")
                         .HasColumnType("uuid");
 
                     b.Property<DateTime?>("DeliveredAt")
@@ -206,20 +209,11 @@ namespace Commerce.Infrastructure.Migrations
                     b.Property<int>("OrderStatus")
                         .HasColumnType("integer");
 
-                    b.Property<DateTime?>("PaidAt")
-                        .HasColumnType("timestamp with time zone");
-
                     b.Property<int>("PaymentMethod")
                         .HasColumnType("integer");
 
                     b.Property<int>("PaymentStatus")
                         .HasColumnType("integer");
-
-                    b.Property<string>("PaymentUrl")
-                        .HasColumnType("text");
-
-                    b.Property<string>("Pidx")
-                        .HasColumnType("text");
 
                     b.Property<DateTime?>("ShippedAt")
                         .HasColumnType("timestamp with time zone");
@@ -257,10 +251,6 @@ namespace Commerce.Infrastructure.Migrations
                         .IsUnique();
 
                     b.HasIndex("OrderStatus");
-
-                    b.HasIndex("Pidx")
-                        .IsUnique()
-                        .HasFilter("\"Pidx\" IS NOT NULL");
 
                     b.ToTable("Orders");
                 });
@@ -308,42 +298,6 @@ namespace Commerce.Infrastructure.Migrations
                     b.HasIndex("ProductVariantId");
 
                     b.ToTable("OrderItems");
-                });
-
-            modelBuilder.Entity("Commerce.Domain.Entities.Payments.PaymentAuditLog", b =>
-                {
-                    b.Property<Guid>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("uuid");
-
-                    b.Property<DateTime>("CheckedAt")
-                        .HasColumnType("timestamp with time zone");
-
-                    b.Property<DateTime>("CreatedAt")
-                        .HasColumnType("timestamp with time zone");
-
-                    b.Property<Guid>("OrderId")
-                        .HasColumnType("uuid");
-
-                    b.Property<string>("Pidx")
-                        .HasColumnType("text");
-
-                    b.Property<string>("RawResponse")
-                        .IsRequired()
-                        .HasColumnType("text");
-
-                    b.Property<string>("Status")
-                        .IsRequired()
-                        .HasColumnType("text");
-
-                    b.Property<DateTime>("UpdatedAt")
-                        .HasColumnType("timestamp with time zone");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("OrderId");
-
-                    b.ToTable("PaymentAuditLogs");
                 });
 
             modelBuilder.Entity("Commerce.Domain.Entities.Products.Category", b =>
@@ -916,7 +870,9 @@ namespace Commerce.Infrastructure.Migrations
                 {
                     b.HasOne("Commerce.Domain.Entities.Users.CustomerProfile", "CustomerProfile")
                         .WithMany()
-                        .HasForeignKey("CustomerProfileId");
+                        .HasForeignKey("CustomerProfileId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
 
                     b.Navigation("CustomerProfile");
                 });
@@ -938,17 +894,6 @@ namespace Commerce.Infrastructure.Migrations
                     b.Navigation("Order");
 
                     b.Navigation("ProductVariant");
-                });
-
-            modelBuilder.Entity("Commerce.Domain.Entities.Payments.PaymentAuditLog", b =>
-                {
-                    b.HasOne("Commerce.Domain.Entities.Orders.Order", "Order")
-                        .WithMany()
-                        .HasForeignKey("OrderId")
-                        .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired();
-
-                    b.Navigation("Order");
                 });
 
             modelBuilder.Entity("Commerce.Domain.Entities.Products.Category", b =>

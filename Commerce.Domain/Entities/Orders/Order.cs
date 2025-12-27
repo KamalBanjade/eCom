@@ -12,16 +12,26 @@ public class Order : BaseEntity
 {
     public string OrderNumber { get; set; } = string.Empty;
     
-    public Guid CustomerProfileId { get; set; }
+    public Guid? CustomerProfileId { get; set; }
     public CustomerProfile CustomerProfile { get; set; } = null!;
     
-    public OrderStatus OrderStatus { get; set; } = OrderStatus.Pending;
+    public OrderStatus OrderStatus { get; set; } = OrderStatus.PendingPayment;
     public PaymentStatus PaymentStatus { get; set; } = PaymentStatus.Pending;
+    public PaymentMethod PaymentMethod { get; set; } = PaymentMethod.CashOnDelivery;
     
     public decimal SubTotal { get; set; }
+    public decimal DiscountAmount { get; set; }
     public decimal TaxAmount { get; set; }
     public decimal ShippingAmount { get; set; }
     public decimal TotalAmount { get; set; }
+    
+    // Coupon snapshot
+    public string? AppliedCouponCode { get; set; }
+    
+    // Khalti payment fields
+    public string? Pidx { get; set; }           // Khalti payment identifier
+    public string? PaymentUrl { get; set; }     // Khalti checkout URL
+    public DateTime? PaidAt { get; set; }       // Payment completion timestamp
     
     // Addresses stored as JSON
     public Address ShippingAddress { get; set; } = null!;

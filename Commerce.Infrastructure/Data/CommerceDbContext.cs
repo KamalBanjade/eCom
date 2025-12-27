@@ -5,6 +5,7 @@ using Commerce.Domain.Entities.Orders;
 using Commerce.Domain.Entities.Products;
 using Commerce.Domain.Entities.Users;
 using Commerce.Domain.Entities.Sales;
+using Commerce.Domain.Entities.Payments;
 using Commerce.Infrastructure.Identity;
 using Microsoft.AspNetCore.Identity.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore;
@@ -32,6 +33,7 @@ public class CommerceDbContext : IdentityDbContext<ApplicationUser>
     public DbSet<RefreshToken> RefreshTokens => Set<RefreshToken>();
     public DbSet<PasswordResetToken> PasswordResetTokens => Set<PasswordResetToken>();
     public DbSet<Coupon> Coupons => Set<Coupon>();
+    public DbSet<PaymentAuditLog> PaymentAuditLogs => Set<PaymentAuditLog>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -54,6 +56,12 @@ public class CommerceDbContext : IdentityDbContext<ApplicationUser>
                 "\"CustomerProfileId\" IS NOT NULL OR \"AnonymousId\" IS NOT NULL"
             ));
         });
+
+        // Order: Unique index on Pidx for Khalti payments
+        modelBuilder.Entity<Order>()
+            .HasIndex(o => o.Pidx)
+            .IsUnique()
+            .HasFilter("\"Pidx\" IS NOT NULL");
     }
 
     public override Task<int> SaveChangesAsync(CancellationToken cancellationToken = default)

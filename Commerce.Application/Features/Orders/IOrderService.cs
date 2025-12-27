@@ -7,9 +7,10 @@ namespace Commerce.Application.Features.Orders;
 
 public interface IOrderService
 {
-    Task<OrderDto> CreateOrderAsync(Guid userId, CancellationToken cancellationToken = default);
-    Task<OrderDto?> GetOrderByIdAsync(Guid orderId, Guid userId, bool isAdmin, CancellationToken cancellationToken = default);
-    Task<IEnumerable<OrderDto>> GetUserOrdersAsync(Guid userId, CancellationToken cancellationToken = default);
-    Task<IEnumerable<OrderDto>> GetAllOrdersAsync(CancellationToken cancellationToken = default);
-    Task<OrderDto> UpdateOrderStatusAsync(Guid orderId, OrderStatus status, CancellationToken cancellationToken = default);
+    Task<ApiResponse<OrderDto>> PlaceOrderAsync(Guid applicationUserId, PlaceOrderRequest request, CancellationToken cancellationToken = default);
+    Task<ApiResponse<OrderDto>> ConfirmPaymentAsync(string pidx, CancellationToken cancellationToken = default);
+    Task<OrderDto?> GetOrderByIdAsync(Guid orderId, Guid applicationUserId, bool isAdmin, CancellationToken cancellationToken = default);
+    Task<IEnumerable<OrderDto>> GetUserOrdersAsync(Guid applicationUserId, CancellationToken cancellationToken = default);
+    Task<PagedResult<OrderDto>> GetOrdersAsync(OrderFilterRequest filter, CancellationToken cancellationToken = default);
+    Task<ApiResponse<OrderDto>> UpdateOrderStatusAsync(Guid orderId, OrderStatus newStatus, CancellationToken cancellationToken = default);
 }

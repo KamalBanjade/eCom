@@ -11,6 +11,10 @@ public class OrderItem : BaseEntity
     public Guid ProductVariantId { get; set; }
     public ProductVariant ProductVariant { get; set; } = null!;
     
+    // Immutable snapshots at order time
+    public string ProductName { get; set; } = string.Empty;
+    public string? VariantName { get; set; }
+    
     public int Quantity { get; set; }
     public decimal UnitPrice { get; set; }
     

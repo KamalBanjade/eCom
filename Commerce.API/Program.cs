@@ -11,6 +11,7 @@ using Commerce.Infrastructure.Repositories;
 using Commerce.Application.Features.Inventory;
 using Commerce.Infrastructure.Services;
 using Commerce.Infrastructure.Settings;
+using Commerce.Infrastructure.Configuration;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
@@ -20,9 +21,17 @@ using System.Text;
 using DotNetEnv;
 
 // Load .env file from current or parent directories
+// Load .env file from current or parent directories
 Env.TraversePath().Load();
 
 var builder = WebApplication.CreateBuilder(args);
+
+// Bridge .env to Configuration
+var khaltiSecret = Environment.GetEnvironmentVariable("KHALTI_SECRET_KEY");
+var khaltiPublic = Environment.GetEnvironmentVariable("KHALTI_PUBLIC_KEY");
+
+if (!string.IsNullOrEmpty(khaltiSecret)) builder.Configuration["Khalti:SecretKey"] = khaltiSecret;
+if (!string.IsNullOrEmpty(khaltiPublic)) builder.Configuration["Khalti:PublicKey"] = khaltiPublic;
 
 // Add services to the container.
 
@@ -82,9 +91,16 @@ builder.Services.AddScoped<ISecurityLogger, SecurityLogger>();
 builder.Services.AddScoped<IImageStorageService, CloudinaryImageStorageService>();
 builder.Services.AddScoped<IPricingService, PricingService>();
 builder.Services.AddScoped<ICouponService, CouponService>();
+builder.Services.AddScoped<IUserProfileService, UserProfileService>();
 
 // 5. Cloudinary Configuration
 builder.Services.Configure<CloudinarySettings>(builder.Configuration.GetSection("Cloudinary"));
+
+// 6. Khalti Configuration & Services
+builder.Services.Configure<KhaltiSettings>(builder.Configuration.GetSection("Khalti"));
+
+builder.Services.AddHttpClient<IKhaltiPaymentService, KhaltiPaymentService>();
+builder.Services.AddHostedService<PaymentReconciliationService>();
 
 // 5. API Configuration
 builder.Services.AddControllers();
