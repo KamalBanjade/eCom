@@ -37,12 +37,16 @@ public class ProductVariantConfiguration : IEntityTypeConfiguration<ProductVaria
         // Store attributes as JSONB in PostgreSQL
         builder.Property(v => v.Attributes)
                .HasColumnType("jsonb")
-               .HasConversion(
-                   v => JsonSerializer.Serialize(v, JsonSerializerOptions.Default),
-                   v => JsonSerializer.Deserialize<Dictionary<string, string>>(v, JsonSerializerOptions.Default) 
-                        ?? new Dictionary<string, string>()
-               )
-               .IsRequired();
+                .IsRequired()
+                .HasConversion(
+                    v => JsonSerializer.Serialize(v, JsonSerializerOptions.Default),
+                    v => JsonSerializer.Deserialize<Dictionary<string, string>>(v, JsonSerializerOptions.Default) 
+                         ?? new Dictionary<string, string>()
+                )
+                .Metadata.SetValueComparer(new Microsoft.EntityFrameworkCore.ChangeTracking.ValueComparer<Dictionary<string, string>>(
+                    (c1, c2) => JsonSerializer.Serialize(c1, JsonSerializerOptions.Default) == JsonSerializer.Serialize(c2, JsonSerializerOptions.Default),
+                    c => c == null ? 0 : JsonSerializer.Serialize(c, JsonSerializerOptions.Default).GetHashCode(),
+                    c => JsonSerializer.Deserialize<Dictionary<string, string>>(JsonSerializer.Serialize(c, JsonSerializerOptions.Default), JsonSerializerOptions.Default) ?? new Dictionary<string, string>()));
 
         builder.Property(v => v.ProductId)
                .IsRequired();

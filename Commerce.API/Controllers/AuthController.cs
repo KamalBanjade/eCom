@@ -1,4 +1,5 @@
 using Commerce.Application.Common.DTOs;
+using Commerce.Application.Common.Interfaces;
 using Commerce.Application.Features.Auth;
 using Commerce.Application.Features.Auth.DTOs;
 using Microsoft.AspNetCore.Authorization;
@@ -204,5 +205,78 @@ public class AuthController : ControllerBase
         return Ok(ApiResponse<bool>.SuccessResponse(true, "MFA disabled successfully"));
     }
 
+    #endregion
+
+    #region Google OAuth
+
+    // private readonly IGoogleAuthService? _googleAuthService;
+
+    /// <summary>
+    /// Initiates Google OAuth login by redirecting to Google consent screen
+    /// </summary>
+    [HttpGet("google/login")]
+    public IActionResult GoogleLogin([FromServices] IGoogleAuthService googleAuthService)
+    {
+        var googleLoginUrl = googleAuthService.GetGoogleLoginUrl(out var state);
+        
+        // Store state in cookie for CSRF validation
+        Response.Cookies.Append("oauth_state", state, new CookieOptions
+        {
+            HttpOnly = true,
+            Secure = true,
+            SameSite = SameSiteMode.Lax,
+            MaxAge = TimeSpan.FromMinutes(10),
+            Path = "/"
+        });
+        
+        return Redirect(googleLoginUrl);
+    }
+
+    /// <summary>
+    /// Handles Google OAuth callback and issues JWT tokens
+    /// </summary>
+    [HttpGet("google/callback")]
+public async Task<IActionResult> GoogleCallback(
+    [FromQuery] string code,
+    [FromQuery] string state,
+    [FromQuery] string? error,
+    [FromServices] IGoogleAuthService googleAuthService,
+    CancellationToken cancellationToken)
+{
+    if (!string.IsNullOrEmpty(error))
+    {
+        return BadRequest(new { error });
+    }
+
+    // Validate state parameter (CSRF protection)
+    var storedState = Request.Cookies["oauth_state"];
+    if (string.IsNullOrEmpty(storedState) || storedState != state)
+    {
+        return BadRequest(new { error = "invalid_state" });
+    }
+    
+    // Clear state cookie
+    Response.Cookies.Delete("oauth_state");
+
+    try
+    {
+        var result = await googleAuthService.HandleGoogleCallbackAsync(code, state, cancellationToken);
+        
+        // Get frontend URL from configuration
+        var config = HttpContext.RequestServices.GetRequiredService<IConfiguration>();
+        var frontendUrl = config["FrontendUrl"] ?? "http://localhost:3000";
+        
+        var redirectUrl = $"{frontendUrl}/auth/callback" +
+            $"?accessToken={Uri.EscapeDataString(result.AccessToken)}" +
+            $"&refreshToken={Uri.EscapeDataString(result.RefreshToken)}" +
+            $"&isNewUser={result.IsNewUser}";
+        
+        return Redirect(redirectUrl);
+    }
+    catch (Exception ex)
+    {
+        return BadRequest(new { error = ex.Message });
+    }
+}
     #endregion
 }

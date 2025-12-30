@@ -26,6 +26,16 @@ public class OrderDto
     
     public string? PaymentUrl { get; set; }  // Khalti payment URL for redirect
     
+    // Assignment tracking
+    public Guid? AssignedToUserId { get; set; }
+    public string? AssignedToUserEmail { get; set; }
+    public string? AssignedRole { get; set; }
+    public DateTime? AssignedAt { get; set; }
+    
+    // Customer info
+    public string? CustomerEmail { get; set; }
+    public string? CustomerName { get; set; }
+    
     public List<OrderItemDto> Items { get; set; } = new();
     
     public DateTime? ConfirmedAt { get; set; }
@@ -67,4 +77,10 @@ public class OrderFilterRequest
 public class UpdateOrderStatusRequest
 {
     public OrderStatus Status { get; set; }
+}
+
+public class AssignOrderRequest
+{
+    public Guid AssignedToUserId { get; set; }
+    public string AssignedRole { get; set; } = string.Empty; // "Warehouse" or "Support"
 }

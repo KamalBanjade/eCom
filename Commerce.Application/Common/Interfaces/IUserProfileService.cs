@@ -34,4 +34,8 @@ public interface IUserProfileService
         Guid userId, 
         RemoveAddressRequest request, 
         CancellationToken cancellationToken = default);
+        
+    // Admin-specific methods
+    Task<AdminUserDto?> GetInternalUserProfileAsync(string userId, CancellationToken cancellationToken = default);
+    Task<ApiResponse<AdminUserDto>> UpdateInternalUserProfileAsync(string userId, UpdateProfileRequest request, CancellationToken cancellationToken = default);
 }

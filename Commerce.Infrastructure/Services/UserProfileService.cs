@@ -228,4 +228,57 @@ public class UserProfileService : IUserProfileService
 
         return await GetProfileAsync(userId, cancellationToken);
     }
+
+    
+    // ==================== Admin / Internal User Methods ====================
+
+    public async Task<AdminUserDto?> GetInternalUserProfileAsync(string userId, CancellationToken cancellationToken = default)
+    {
+        var user = await _userManager.FindByIdAsync(userId);
+        if (user == null) return null;
+
+        var roles = await _userManager.GetRolesAsync(user);
+
+        return new AdminUserDto
+        {
+            Id = user.Id,
+            Email = user.Email!,
+            PhoneNumber = user.PhoneNumber,
+            EmailConfirmed = user.EmailConfirmed,
+            MfaEnabled = user.MfaEnabled,
+            Roles = roles.ToList(),
+            CreatedAt = DateTime.UtcNow,
+            IsActive = true 
+        };
+    }
+
+    public async Task<ApiResponse<AdminUserDto>> UpdateInternalUserProfileAsync(string userId, UpdateProfileRequest request, CancellationToken cancellationToken = default)
+    {
+        var user = await _userManager.FindByIdAsync(userId);
+        if (user == null) return ApiResponse<AdminUserDto>.ErrorResponse("User not found");
+
+        // Internal users only have PhoneNumber to update in IdentityUser (unless we use Claims for names)
+        // We'll update PhoneNumber if provided
+        
+        bool changed = false;
+        
+        if (user.PhoneNumber != request.PhoneNumber)
+        {
+            user.PhoneNumber = request.PhoneNumber;
+            changed = true;
+        }
+
+        // Ignore FirstName/LastName from request as ApplicationUser doesn't have them
+        
+        if (changed)
+        {
+            var result = await _userManager.UpdateAsync(user);
+            if (!result.Succeeded)
+                return ApiResponse<AdminUserDto>.ErrorResponse(string.Join(", ", result.Errors.Select(e => e.Description)));
+        }
+
+        return ApiResponse<AdminUserDto>.SuccessResponse(
+            (await GetInternalUserProfileAsync(userId, cancellationToken))!, 
+            "Profile updated successfully");
+    }
 }

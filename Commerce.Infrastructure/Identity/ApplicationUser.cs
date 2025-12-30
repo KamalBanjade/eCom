@@ -13,4 +13,9 @@ public class ApplicationUser : IdentityUser
     // Multi-Factor Authentication
     public bool MfaEnabled { get; set; } = false;
     public string? MfaSecret { get; set; } // TOTP secret (base32 encoded)
+    
+    // OAuth Provider Information
+    public string? GoogleId { get; set; } // Google user ID (sub claim)
+    public string? Provider { get; set; } // "Google", "Facebook", etc.
+    
 }

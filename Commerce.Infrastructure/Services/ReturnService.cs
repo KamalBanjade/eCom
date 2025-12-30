@@ -1,5 +1,6 @@
 using Commerce.Application.Common.DTOs;
 using Commerce.Application.Common.Interfaces;
+using Commerce.Application.Features.Returns.DTOs;
 using Commerce.Domain.Entities.Sales;
 using Commerce.Domain.Entities.Payments;
 using Commerce.Domain.Enums;
@@ -186,4 +187,100 @@ public class ReturnService : IReturnService
             return ApiResponse<ReturnRequest>.ErrorResponse($"Refund failed: {ex.Message}");
         }
     }
+
+
+    // ==========================================
+    // Admin Methods
+    // ==========================================
+
+    public async Task<PagedResult<ReturnRequestDto>> GetAllReturnsAsync(ReturnFilterRequest filter, CancellationToken cancellationToken = default)
+    {
+        var query = _context.Returns
+            .Include(r => r.Order)
+            .ThenInclude(o => o.CustomerProfile)
+            .AsNoTracking()
+            .AsQueryable();
+
+        if (filter.Status.HasValue)
+            query = query.Where(r => r.ReturnStatus == filter.Status.Value);
+
+        if (filter.FromDate.HasValue)
+            query = query.Where(r => r.RequestedAt >= filter.FromDate.Value);
+
+        if (filter.ToDate.HasValue)
+            query = query.Where(r => r.RequestedAt <= filter.ToDate.Value);
+
+        if (filter.CustomerId.HasValue)
+            query = query.Where(r => r.Order.CustomerProfileId == filter.CustomerId.Value);
+
+        if (filter.AssignedToUserId.HasValue)
+            query = query.Where(r => r.AssignedToUserId == filter.AssignedToUserId.Value);
+
+        if (!string.IsNullOrEmpty(filter.OrderNumber))
+            query = query.Where(r => r.Order.OrderNumber.Contains(filter.OrderNumber));
+
+        var totalCount = await query.CountAsync(cancellationToken);
+        
+        var returns = await query
+            .OrderByDescending(r => r.RequestedAt)
+            .Skip((filter.Page - 1) * filter.PageSize)
+            .Take(filter.PageSize)
+            .ToListAsync(cancellationToken);
+
+        var dtos = returns.Select(MapToDto).ToList();
+        
+        return new PagedResult<ReturnRequestDto>(dtos, totalCount, filter.Page, filter.PageSize);
+    }
+
+    public async Task<ReturnRequestDto?> GetReturnByIdAsync(Guid returnId, CancellationToken cancellationToken = default)
+    {
+        var returnRequest = await _context.Returns
+            .Include(r => r.Order)
+            .ThenInclude(o => o.CustomerProfile)
+            .AsNoTracking()
+            .FirstOrDefaultAsync(r => r.Id == returnId, cancellationToken);
+
+        return returnRequest == null ? null : MapToDto(returnRequest);
+    }
+
+    public async Task<ApiResponse<ReturnRequest>> AssignReturnAsync(Guid returnId, Guid assignedToUserId, CancellationToken cancellationToken = default)
+    {
+        var request = await _context.Returns.FindAsync(new object[] { returnId }, cancellationToken);
+        if (request == null) return ApiResponse<ReturnRequest>.ErrorResponse("Return request not found");
+
+        request.AssignedToUserId = assignedToUserId;
+        request.AssignedAt = DateTime.UtcNow;
+
+        await _context.SaveChangesAsync(cancellationToken);
+
+        return ApiResponse<ReturnRequest>.SuccessResponse(request, "Return assigned successfully");
+    }
+
+    private static ReturnRequestDto MapToDto(ReturnRequest request)
+    {
+        return new ReturnRequestDto
+        {
+            Id = request.Id,
+            OrderId = request.OrderId,
+            OrderNumber = request.Order?.OrderNumber ?? "N/A",
+            Reason = request.Reason,
+            ReturnStatus = request.ReturnStatus.ToString(),
+            RefundAmount = request.RefundAmount,
+            RefundMethod = request.RefundMethod?.ToString(),
+            KhaltiPidx = request.KhaltiPidx,
+            
+            AssignedToUserId = request.AssignedToUserId,
+            // AssignedToUserEmail would require User lookup, skipping for now or need join
+            AssignedAt = request.AssignedAt,
+            
+            RequestedAt = request.RequestedAt,
+            ApprovedAt = request.ApprovedAt,
+            ReceivedAt = request.ReceivedAt,
+            RefundedAt = request.RefundedAt,
+            
+            CustomerEmail = request.Order?.CustomerProfile?.Email ?? "", // Assuming Email is on CustomerProfile or need another join
+            CustomerName = request.Order?.CustomerProfile?.FullName ?? ""
+        };
+    }
 }
+

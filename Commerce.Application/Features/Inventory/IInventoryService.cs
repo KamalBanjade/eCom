@@ -10,13 +10,13 @@ public interface IInventoryService
     Task<bool> ReserveStockAsync(Guid productVariantId, int quantity, string userId, TimeSpan duration, CancellationToken cancellationToken = default);
     
     // Release a specific reservation (e.g., removing from cart)
-    Task ReleaseReservationAsync(Guid productVariantId, string userId, CancellationToken cancellationToken = default);
+    Task<bool> ReleaseReservationAsync(Guid productVariantId, string userId, CancellationToken cancellationToken = default);
     
     // Confirm stock deduction (checkout success) - Permanently decrements StockQuantity and marks reservation as confirmed
     Task ConfirmStockAsync(Guid productVariantId, int quantity, string userId, CancellationToken cancellationToken = default);
     
     // Cleanup expired reservations (background job candidate)
-    Task CleanupExpiredReservationsAsync(CancellationToken cancellationToken = default);
+    Task<int> CleanupExpiredReservationsAsync(CancellationToken cancellationToken = default);
     
     // Get current available stock (Total - Reserved)
     Task<int> GetAvailableStockAsync(Guid productVariantId, CancellationToken cancellationToken = default);

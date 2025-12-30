@@ -24,8 +24,8 @@ public class CommerceDbContext : IdentityDbContext<ApplicationUser>
     public DbSet<Category> Categories => Set<Category>();
     public DbSet<Product> Products => Set<Product>();
     public DbSet<ProductVariant> ProductVariants => Set<ProductVariant>();
-    public DbSet<Inventory> Inventories => Set<Inventory>();
     public DbSet<StockReservation> StockReservations => Set<StockReservation>();
+    public DbSet<StockAuditLog> StockAuditLogs => Set<StockAuditLog>();
     public DbSet<Cart> Carts => Set<Cart>();
     public DbSet<CartItem> CartItems => Set<CartItem>();
     public DbSet<Order> Orders => Set<Order>();
@@ -63,6 +63,12 @@ public class CommerceDbContext : IdentityDbContext<ApplicationUser>
             .HasIndex(o => o.Pidx)
             .IsUnique()
             .HasFilter("\"Pidx\" IS NOT NULL");
+
+        // StockReservation: Unique index to prevent duplicate active reservations
+        modelBuilder.Entity<StockReservation>()
+            .HasIndex(r => new { r.ProductVariantId, r.UserId })
+            .IsUnique()
+            .HasFilter("\"IsReleased\" = false AND \"IsConfirmed\" = false");
     }
 
     public override Task<int> SaveChangesAsync(CancellationToken cancellationToken = default)

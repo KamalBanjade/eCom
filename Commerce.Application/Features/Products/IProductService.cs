@@ -1,5 +1,6 @@
 // File: Commerce.Application/Features/Products/IProductService.cs
 using Commerce.Application.Features.Products.DTOs;
+using Commerce.Application.Common.DTOs;
 
 namespace Commerce.Application.Features.Products;
 
@@ -27,4 +28,10 @@ public interface IProductService
     Task<bool> RemoveProductImageAsync(Guid productId, string imageUrl, CancellationToken cancellationToken = default);
     Task<bool> UpdateVariantImageAsync(Guid variantId, string imageUrl, CancellationToken cancellationToken = default);
     Task<bool> RemoveVariantImageAsync(Guid variantId, CancellationToken cancellationToken = default);
+    
+    // Admin-specific methods
+    Task<PagedResult<ProductResponse>> GetProductsWithFiltersAsync(ProductFilterRequest filter, CancellationToken cancellationToken = default);
+    Task<ApiResponse<bool>> AdjustStockAsync(Guid productId, int quantityChange, string reason, CancellationToken cancellationToken = default);
+    Task<IEnumerable<ProductResponse>> GetLowStockProductsAsync(int threshold = 10, CancellationToken cancellationToken = default);
+    Task<ApiResponse<List<ProductVariantResponse>>> CreateProductVariantsBulkAsync(Guid productId, List<CreateProductVariantRequest> variants, CancellationToken cancellationToken = default);
 }

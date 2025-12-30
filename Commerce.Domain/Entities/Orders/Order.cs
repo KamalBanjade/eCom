@@ -37,6 +37,11 @@ public class Order : BaseEntity
     public Address ShippingAddress { get; set; } = null!;
     public Address BillingAddress { get; set; } = null!;
     
+    // Assignment tracking for warehouse/support
+    public Guid? AssignedToUserId { get; set; }
+    public string? AssignedRole { get; set; }  // "Warehouse" or "Support"
+    public DateTime? AssignedAt { get; set; }
+    
     public ICollection<OrderItem> Items { get; set; } = new List<OrderItem>();
     
     public DateTime? ConfirmedAt { get; set; }

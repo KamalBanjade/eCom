@@ -5,6 +5,7 @@ using Commerce.Application.Common.Interfaces;
 using Commerce.Application.Common.DTOs;
 using Commerce.Application.Features.Payments.DTOs;
 using Commerce.Domain.Entities.Orders;
+using Commerce.Domain.Entities.Sales;
 using Commerce.Domain.Entities.Payments;
 using Commerce.Domain.Enums;
 using Commerce.Domain.ValueObjects;
@@ -578,6 +579,12 @@ public class OrderService : IOrderService
             ShippingAddress = order.ShippingAddress,
             BillingAddress = order.BillingAddress,
             PaymentUrl = order.PaymentUrl,  // Include for Khalti redirect
+            
+            // Assignment info
+            AssignedToUserId = order.AssignedToUserId,
+            AssignedRole = order.AssignedRole,
+            AssignedAt = order.AssignedAt,
+            
             Items = order.Items.Select(i => new OrderItemDto
             {
                 Id = i.Id,
@@ -593,6 +600,70 @@ public class OrderService : IOrderService
             DeliveredAt = order.DeliveredAt,
             CancelledAt = order.CancelledAt
         };
+    }
+    
+    // ==========================================
+    // Admin Methods
+    // ==========================================
+
+    public async Task<ApiResponse<OrderDto>> AssignOrderAsync(Guid orderId, Guid assignedToUserId, string assignedRole, CancellationToken cancellationToken = default)
+    {
+        var order = await _context.Orders
+            .Include(o => o.Items)
+            .FirstOrDefaultAsync(o => o.Id == orderId, cancellationToken);
+
+        if (order == null)
+            return ApiResponse<OrderDto>.ErrorResponse("Order not found");
+
+        order.AssignedToUserId = assignedToUserId;
+        order.AssignedRole = assignedRole;
+        order.AssignedAt = DateTime.UtcNow;
+
+        await _context.SaveChangesAsync(cancellationToken);
+
+        return ApiResponse<OrderDto>.SuccessResponse(MapToDto(order), $"Order assigned to {assignedRole} user");
+    }
+
+    public async Task<PagedResult<OrderDto>> GetPendingPaymentOrdersAsync(int page = 1, int pageSize = 10, CancellationToken cancellationToken = default)
+    {
+        var query = _context.Orders
+            .AsNoTracking()
+            .Where(o => o.PaymentMethod == PaymentMethod.Khalti && o.PaymentStatus == PaymentStatus.Initiated) // Logic: Khalti + Initiated = Unpaid
+            .OrderByDescending(o => o.CreatedAt);
+
+        var totalCount = await query.CountAsync(cancellationToken);
+        
+        var orders = await query
+            .Skip((page - 1) * pageSize)
+            .Take(pageSize)
+            .Include(o => o.Items)
+            .ToListAsync(cancellationToken);
+
+        var dtos = orders.Select(MapToDto).ToList();
+        
+        return new PagedResult<OrderDto>(dtos, totalCount, page, pageSize);
+    }
+
+    public async Task<PagedResult<OrderDto>> GetOrdersWithReturnsAsync(int page = 1, int pageSize = 10, CancellationToken cancellationToken = default)
+    {
+        // Find orders that have associated return requests
+        // Using join or simple where exists
+        var query = _context.Orders
+            .AsNoTracking()
+            .Where(o => _context.Returns.Any(r => r.OrderId == o.Id))
+            .OrderByDescending(o => o.CreatedAt);
+
+        var totalCount = await query.CountAsync(cancellationToken);
+        
+        var orders = await query
+            .Include(o => o.Items)
+            .Skip((page - 1) * pageSize)
+            .Take(pageSize)
+            .ToListAsync(cancellationToken);
+
+        var dtos = orders.Select(MapToDto).ToList();
+        
+        return new PagedResult<OrderDto>(dtos, totalCount, page, pageSize);
     }
 }
 

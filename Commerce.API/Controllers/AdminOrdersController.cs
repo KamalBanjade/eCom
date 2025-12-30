@@ -1,4 +1,5 @@
 using Commerce.Application.Common.DTOs;
+using Commerce.Application.Common.Interfaces;
 using Commerce.Application.Features.Orders;
 using Commerce.Application.Features.Orders.DTOs;
 using Commerce.Domain.Enums;
@@ -13,10 +14,12 @@ namespace Commerce.API.Controllers;
 public class AdminOrdersController : ControllerBase
 {
     private readonly IOrderService _orderService;
+    private readonly IExportService _exportService;
 
-    public AdminOrdersController(IOrderService orderService)
+    public AdminOrdersController(IOrderService orderService, IExportService exportService)
     {
         _orderService = orderService;
+        _exportService = exportService;
     }
 
     /// <summary>
@@ -31,6 +34,32 @@ public class AdminOrdersController : ControllerBase
         CancellationToken cancellationToken)
     {
         var result = await _orderService.GetOrdersAsync(filter, cancellationToken);
+        return Ok(ApiResponse<PagedResult<OrderDto>>.SuccessResponse(result));
+    }
+    
+    /// <summary>
+    /// Admin: Quick view for orders pending payment (Khalti unpaid)
+    /// </summary>
+    [HttpGet("pending-payment")]
+    public async Task<ActionResult<ApiResponse<PagedResult<OrderDto>>>> GetPendingPaymentOrders(
+        [FromQuery] int page = 1,
+        [FromQuery] int pageSize = 10,
+        CancellationToken cancellationToken = default)
+    {
+        var result = await _orderService.GetPendingPaymentOrdersAsync(page, pageSize, cancellationToken);
+        return Ok(ApiResponse<PagedResult<OrderDto>>.SuccessResponse(result));
+    }
+
+    /// <summary>
+    /// Admin: Quick view for orders with return requests
+    /// </summary>
+    [HttpGet("returns")]
+    public async Task<ActionResult<ApiResponse<PagedResult<OrderDto>>>> GetOrdersWithReturns(
+        [FromQuery] int page = 1,
+        [FromQuery] int pageSize = 10,
+        CancellationToken cancellationToken = default)
+    {
+        var result = await _orderService.GetOrdersWithReturnsAsync(page, pageSize, cancellationToken);
         return Ok(ApiResponse<PagedResult<OrderDto>>.SuccessResponse(result));
     }
 
@@ -73,5 +102,41 @@ public class AdminOrdersController : ControllerBase
             return BadRequest(result);
 
         return Ok(result);
+    }
+    
+    /// <summary>
+    /// Admin: Assigns an order to warehouse or support staff
+    /// </summary>
+    [HttpPatch("{id}/assign")]
+    public async Task<ActionResult<ApiResponse<OrderDto>>> AssignOrder(
+        Guid id,
+        [FromBody] AssignOrderRequest request,
+        CancellationToken cancellationToken)
+    {
+        var result = await _orderService.AssignOrderAsync(id, request.AssignedToUserId, request.AssignedRole, cancellationToken);
+        
+        if (!result.Success)
+            return BadRequest(result);
+            
+        return Ok(result);
+    }
+    
+    /// <summary>
+    /// Admin: Exports orders to CSV based on filters
+    /// </summary>
+    [HttpPost("export")]
+    public async Task<IActionResult> ExportOrders(
+        [FromBody] OrderFilterRequest filter,
+        CancellationToken cancellationToken)
+    {
+        // Get all matching orders (ignoring pagination for export)
+        filter.Page = 1;
+        filter.PageSize = 10000; 
+        
+        var result = await _orderService.GetOrdersAsync(filter, cancellationToken);
+        // ✅ FIXED: Changed from result.Data to result.Items
+        var csvBytes = await _exportService.ExportOrdersToCsvAsync(result.Items, cancellationToken);
+        
+        return File(csvBytes, "text/csv", $"orders_export_{DateTime.UtcNow:yyyyMMddHHmmss}.csv");
     }
 }

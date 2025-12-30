@@ -18,6 +18,10 @@ public class ReturnRequest
     
     public string? KhaltiPidx { get; set; }
     
+    // Assignment tracking
+    public Guid? AssignedToUserId { get; set; }
+    public DateTime? AssignedAt { get; set; }
+    
     public DateTime RequestedAt { get; set; }
     public DateTime? ApprovedAt { get; set; }
     public DateTime? ReceivedAt { get; set; }

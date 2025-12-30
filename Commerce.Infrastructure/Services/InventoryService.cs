@@ -1,41 +1,142 @@
 using Commerce.Application.Common.Interfaces;
 using Commerce.Application.Features.Inventory;
+using Commerce.Domain.Configuration;
+using Commerce.Domain.Entities.Inventory;
 using Commerce.Domain.Entities.Products;
+using Commerce.Domain.Exceptions;
 using Commerce.Infrastructure.Data;
 using Microsoft.EntityFrameworkCore;
-using InventoryEntities = Commerce.Domain.Entities.Inventory;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 
 namespace Commerce.Infrastructure.Services;
 
 public class InventoryService : IInventoryService
 {
     private readonly CommerceDbContext _context;
-    private readonly IRepository<InventoryEntities.StockReservation> _reservationRepository;
+    private readonly IRepository<StockReservation> _reservationRepository;
     private readonly IRepository<ProductVariant> _variantRepository;
+    private readonly IOptions<InventoryConfiguration> _config;
+    private readonly ILogger<InventoryService> _logger;
+    private readonly IServiceScopeFactory _scopeFactory;
 
     public InventoryService(
         CommerceDbContext context,
-        IRepository<InventoryEntities.StockReservation> reservationRepository,
-        IRepository<ProductVariant> variantRepository)
+        IRepository<StockReservation> reservationRepository,
+        IRepository<ProductVariant> variantRepository,
+        IOptions<InventoryConfiguration> config,
+        ILogger<InventoryService> logger,
+        IServiceScopeFactory scopeFactory)
     {
-        _context = context;
-        _reservationRepository = reservationRepository;
-        _variantRepository = variantRepository;
+        _context = context ?? throw new ArgumentNullException(nameof(context));
+        _reservationRepository = reservationRepository ?? throw new ArgumentNullException(nameof(reservationRepository));
+        _variantRepository = variantRepository ?? throw new ArgumentNullException(nameof(variantRepository));
+        _config = config ?? throw new ArgumentNullException(nameof(config));
+        _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+        _scopeFactory = scopeFactory ?? throw new ArgumentNullException(nameof(scopeFactory));
     }
+
+    #region Helper Methods
+
+    private void ValidateQuantity(int quantity, string paramName)
+    {
+        if (quantity < _config.Value.MinReservationQuantity)
+            throw new ArgumentException($"Quantity must be at least {_config.Value.MinReservationQuantity}", paramName);
+        if (quantity > _config.Value.MaxReservationQuantity)
+            throw new ArgumentException($"Quantity cannot exceed {_config.Value.MaxReservationQuantity}", paramName);
+    }
+
+    private void ValidateUserId(string userId)
+    {
+        if (string.IsNullOrWhiteSpace(userId))
+            throw new ArgumentException("UserId cannot be null or empty", nameof(userId));
+    }
+
+   private Task LogStockChangeAsync(
+    Guid productVariantId,
+    string action,
+    int quantityChanged,
+    int stockBefore,
+    int stockAfter,
+    string? userId = null,
+    Guid? reservationId = null,
+    string? reason = null)
+{
+    var log = new StockAuditLog
+    {
+        ProductVariantId = productVariantId,
+        Action = action,
+        QuantityChanged = quantityChanged,
+        StockBefore = stockBefore,
+        StockAfter = stockAfter,
+        UserId = userId,
+        ReservationId = reservationId,
+        Reason = reason,
+        Timestamp = DateTime.UtcNow
+    };
+
+    _context.StockAuditLogs.Add(log);
+    
+    return Task.CompletedTask; // ✅ ADD THIS
+}
+
+    private void LogStockChangeFireAndForget(
+        Guid productVariantId,
+        string action,
+        int quantityChanged,
+        int stockBefore,
+        int stockAfter,
+        string? userId = null,
+        Guid? reservationId = null,
+        string? reason = null)
+    {
+        // Fire-and-forget logging for non-critical operations using new scope for thread safety
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                using var scope = _scopeFactory.CreateScope();
+                var dbContext = scope.ServiceProvider.GetRequiredService<CommerceDbContext>();
+                
+                var log = new StockAuditLog
+                {
+                    ProductVariantId = productVariantId,
+                    Action = action,
+                    QuantityChanged = quantityChanged,
+                    StockBefore = stockBefore,
+                    StockAfter = stockAfter,
+                    UserId = userId,
+                    ReservationId = reservationId,
+                    Reason = reason,
+                    Timestamp = DateTime.UtcNow
+                };
+                
+                dbContext.StockAuditLogs.Add(log);
+                await dbContext.SaveChangesAsync();
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to log stock change for variant {ProductVariantId}", productVariantId);
+            }
+        });
+    }
+
+    #endregion
 
     public async Task<int> GetAvailableStockAsync(Guid productVariantId, CancellationToken cancellationToken = default)
     {
         var variant = await _variantRepository.GetByIdAsync(productVariantId, cancellationToken);
         if (variant == null) return 0;
-        
+
         // Sum active reservations
-        var reservedQuantity = await _context.Set<InventoryEntities.StockReservation>()
-            .Where(r => r.ProductVariantId == productVariantId && 
-                        !r.IsReleased && 
-                        !r.IsConfirmed && 
+        var reservedQuantity = await _context.Set<StockReservation>()
+            .Where(r => r.ProductVariantId == productVariantId &&
+                        !r.IsReleased &&
+                        !r.IsConfirmed &&
                         r.ExpiresAt > DateTime.UtcNow)
             .SumAsync(r => r.Quantity, cancellationToken);
-            
+
         return Math.Max(0, variant.StockQuantity - reservedQuantity);
     }
 
@@ -47,17 +148,46 @@ public class InventoryService : IInventoryService
 
     public async Task<bool> ReserveStockAsync(Guid productVariantId, int quantity, string userId, TimeSpan duration, CancellationToken cancellationToken = default)
     {
+        ValidateQuantity(quantity, nameof(quantity));
+        ValidateUserId(userId);
+
         using var transaction = await _context.Database.BeginTransactionAsync(cancellationToken);
         try
         {
-            var available = await GetAvailableStockAsync(productVariantId, cancellationToken);
-            
-            var existingReservation = await _context.Set<InventoryEntities.StockReservation>()
-                .FirstOrDefaultAsync(r => r.ProductVariantId == productVariantId && 
-                                          r.UserId == userId && 
-                                          !r.IsReleased && 
+            // Pessimistic locking: Lock the ProductVariant row with UPDLOCK, HOLDLOCK
+            var variant = await _context.ProductVariants
+                .FromSqlRaw(@"SELECT * FROM ""ProductVariants"" WITH (UPDLOCK, HOLDLOCK) WHERE ""Id"" = {0}", productVariantId)
+                .FirstOrDefaultAsync(cancellationToken);
+
+            if (variant == null)
+                throw new InvalidOperationException($"Product variant {productVariantId} not found");
+
+            // Auto-cleanup expired reservations for this user
+            var expiredForUser = await _context.Set<StockReservation>()
+                .Where(r => r.UserId == userId && !r.IsReleased && !r.IsConfirmed && r.ExpiresAt <= DateTime.UtcNow)
+                .ToListAsync(cancellationToken);
+
+            foreach (var expired in expiredForUser)
+            {
+                expired.IsReleased = true;
+            }
+
+            var existingReservation = await _context.Set<StockReservation>()
+                .FirstOrDefaultAsync(r => r.ProductVariantId == productVariantId &&
+                                          r.UserId == userId &&
+                                          !r.IsReleased &&
                                           !r.IsConfirmed, cancellationToken);
-                                          
+
+            // Calculate available stock
+            var reservedQuantity = await _context.Set<StockReservation>()
+                .Where(r => r.ProductVariantId == productVariantId &&
+                            !r.IsReleased &&
+                            !r.IsConfirmed &&
+                            r.ExpiresAt > DateTime.UtcNow)
+                .SumAsync(r => r.Quantity, cancellationToken);
+
+            var available = variant.StockQuantity - reservedQuantity;
+
             int quantityNeeded = quantity;
             if (existingReservation != null)
             {
@@ -69,24 +199,38 @@ public class InventoryService : IInventoryService
                 else
                 {
                     // Decreasing reservation, always allowed
-                    quantityNeeded = 0; 
+                    quantityNeeded = 0;
                 }
             }
 
             if (quantityNeeded > 0 && available < quantityNeeded)
             {
-                return false; // Not enough stock
+                throw new InsufficientStockException(productVariantId, quantity, available);
             }
 
+            Guid reservationId;
             if (existingReservation != null)
             {
+                int oldQuantity = existingReservation.Quantity;
                 existingReservation.Quantity = quantity;
                 existingReservation.ExpiresAt = DateTime.UtcNow.Add(duration);
-                _context.Set<InventoryEntities.StockReservation>().Update(existingReservation);
+                _context.Set<StockReservation>().Update(existingReservation);
+                reservationId = existingReservation.Id;
+
+                // Audit log - reservations don't change physical stock
+                await LogStockChangeAsync(
+                    productVariantId,
+                    "Reserve_Update",
+                    quantity - oldQuantity,
+                    0,  // Physical stock unchanged
+                    0,  // Physical stock unchanged
+                    userId,
+                    reservationId,
+                    $"Updated reservation from {oldQuantity} to {quantity}");
             }
             else
             {
-                var reservation = new InventoryEntities.StockReservation
+                var reservation = new StockReservation
                 {
                     Id = Guid.NewGuid(),
                     ProductVariantId = productVariantId,
@@ -96,7 +240,19 @@ public class InventoryService : IInventoryService
                     IsReleased = false,
                     IsConfirmed = false
                 };
-                await _context.Set<InventoryEntities.StockReservation>().AddAsync(reservation, cancellationToken);
+                await _context.Set<StockReservation>().AddAsync(reservation, cancellationToken);
+                reservationId = reservation.Id;
+
+                // Audit log - reservations don't change physical stock
+                await LogStockChangeAsync(
+                    productVariantId,
+                    "Reserve",
+                    quantity,
+                    0,  // Physical stock unchanged
+                    0,  // Physical stock unchanged
+                    userId,
+                    reservationId,
+                    "New reservation created");
             }
 
             await _context.SaveChangesAsync(cancellationToken);
@@ -110,48 +266,100 @@ public class InventoryService : IInventoryService
         }
     }
 
-    public async Task ReleaseReservationAsync(Guid productVariantId, string userId, CancellationToken cancellationToken = default)
+    public async Task<bool> ReleaseReservationAsync(Guid productVariantId, string userId, CancellationToken cancellationToken = default)
     {
-        var reservation = await _context.Set<InventoryEntities.StockReservation>()
-            .FirstOrDefaultAsync(r => r.ProductVariantId == productVariantId && 
-                                      r.UserId == userId && 
-                                      !r.IsReleased && 
-                                      !r.IsConfirmed, cancellationToken);
+        ValidateUserId(userId);
 
-        if (reservation != null)
+        using var transaction = await _context.Database.BeginTransactionAsync(cancellationToken);
+        try
         {
+            var reservation = await _context.Set<StockReservation>()
+                .FirstOrDefaultAsync(r => r.ProductVariantId == productVariantId &&
+                                          r.UserId == userId &&
+                                          !r.IsReleased &&
+                                          !r.IsConfirmed, cancellationToken);
+
+            if (reservation == null)
+            {
+                return false; // No active reservation found
+            }
+
             reservation.IsReleased = true;
             await _context.SaveChangesAsync(cancellationToken);
+            await transaction.CommitAsync(cancellationToken);
+
+            // Fire-and-forget audit logging
+            LogStockChangeFireAndForget(
+                productVariantId,
+                "Release",
+                -reservation.Quantity,
+                0, // Not tracking variant stock here
+                0,
+                userId,
+                reservation.Id,
+                "Reservation released manually");
+
+            return true;
+        }
+        catch
+        {
+            await transaction.RollbackAsync(cancellationToken);
+            throw;
         }
     }
 
     public async Task ConfirmStockAsync(Guid productVariantId, int quantity, string userId, CancellationToken cancellationToken = default)
     {
+        ValidateQuantity(quantity, nameof(quantity));
+        ValidateUserId(userId);
+
         using var transaction = await _context.Database.BeginTransactionAsync(cancellationToken);
         try
         {
-            var reservation = await _context.Set<InventoryEntities.StockReservation>()
-                .FirstOrDefaultAsync(r => r.ProductVariantId == productVariantId && 
-                                          r.UserId == userId && 
-                                          !r.IsReleased && 
+            // Pessimistic locking on ProductVariant
+            var variant = await _context.ProductVariants
+                .FromSqlRaw(@"SELECT * FROM ""ProductVariants"" WITH (UPDLOCK, HOLDLOCK) WHERE ""Id"" = {0}", productVariantId)
+                .FirstOrDefaultAsync(cancellationToken);
+
+            if (variant == null)
+                throw new InvalidOperationException("Product Variant not found.");
+
+            var reservation = await _context.Set<StockReservation>()
+                .FirstOrDefaultAsync(r => r.ProductVariantId == productVariantId &&
+                                          r.UserId == userId &&
+                                          !r.IsReleased &&
                                           !r.IsConfirmed, cancellationToken);
 
-            var variant = await _variantRepository.GetByIdAsync(productVariantId, cancellationToken);
-            if (variant == null) throw new InvalidOperationException("Product Variant not found.");
+            // Reservation is MANDATORY
+            if (reservation == null)
+                throw new ReservationNotFoundException(productVariantId, userId);
+
+            // Validate reservation quantity matches
+            if (reservation.Quantity != quantity)
+                throw new InvalidOperationException($"Reservation quantity ({reservation.Quantity}) does not match requested quantity ({quantity})");
+
+            // Validate stock BEFORE decrementing
+            if (variant.StockQuantity < quantity)
+                throw new InsufficientStockException(productVariantId, quantity, variant.StockQuantity);
+
+            int stockBefore = variant.StockQuantity;
 
             // Deduct permanent stock
             variant.StockQuantity -= quantity;
-            if (variant.StockQuantity < 0) variant.StockQuantity = 0;
 
-            if (reservation != null)
-            {
-                reservation.IsConfirmed = true;
-            }
-            else
-            {
-                if (variant.StockQuantity < 0) 
-                    throw new InvalidOperationException("Insufficient stock to confirm without reservation.");
-            }
+            // Mark reservation as confirmed
+            reservation.IsConfirmed = true;
+
+            // Audit log
+            await LogStockChangeAsync(
+                productVariantId,
+                "Confirm",
+                -quantity,
+                stockBefore,
+                variant.StockQuantity,
+                userId,
+                reservation.Id,
+                "Stock confirmed and deducted");
 
             await _variantRepository.UpdateAsync(variant, cancellationToken);
             await _context.SaveChangesAsync(cancellationToken);
@@ -164,20 +372,52 @@ public class InventoryService : IInventoryService
         }
     }
 
-    public async Task CleanupExpiredReservationsAsync(CancellationToken cancellationToken = default)
+    public async Task<int> CleanupExpiredReservationsAsync(CancellationToken cancellationToken = default)
     {
-        var expired = await _context.Set<InventoryEntities.StockReservation>()
-            .Where(r => !r.IsReleased && !r.IsConfirmed && r.ExpiresAt <= DateTime.UtcNow)
-            .ToListAsync(cancellationToken);
+        using var transaction = await _context.Database.BeginTransactionAsync(cancellationToken);
+        try
+        {
+            var expired = await _context.Set<StockReservation>()
+                .Where(r => !r.IsReleased && !r.IsConfirmed && r.ExpiresAt <= DateTime.UtcNow)
+                .ToListAsync(cancellationToken);
 
-        foreach (var r in expired)
-        {
-            r.IsReleased = true;
+            int count = expired.Count;
+
+            foreach (var r in expired)
+            {
+                r.IsReleased = true;
+            }
+
+            if (expired.Any())
+            {
+                await _context.SaveChangesAsync(cancellationToken);
+            }
+
+            await transaction.CommitAsync(cancellationToken);
+
+            // Fire-and-forget audit logging AFTER transaction commits
+            if (count > 0)
+            {
+                foreach (var r in expired)
+                {
+                    LogStockChangeFireAndForget(
+                        r.ProductVariantId,
+                        "Cleanup",
+                        -r.Quantity,
+                        0,
+                        0,
+                        r.UserId,
+                        r.Id,
+                        "Expired reservation auto-released");
+                }
+            }
+
+            return count;
         }
-        
-        if (expired.Any())
+        catch
         {
-            await _context.SaveChangesAsync(cancellationToken);
+            await transaction.RollbackAsync(cancellationToken);
+            throw;
         }
     }
 }

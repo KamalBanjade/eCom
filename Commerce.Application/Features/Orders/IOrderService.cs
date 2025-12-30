@@ -14,4 +14,9 @@ public interface IOrderService
     Task<IEnumerable<OrderDto>> GetUserOrdersAsync(Guid applicationUserId, CancellationToken cancellationToken = default);
     Task<PagedResult<OrderDto>> GetOrdersAsync(OrderFilterRequest filter, CancellationToken cancellationToken = default);
     Task<ApiResponse<OrderDto>> UpdateOrderStatusAsync(Guid orderId, OrderStatus newStatus, CancellationToken cancellationToken = default);
+    
+    // Admin-specific methods
+    Task<ApiResponse<OrderDto>> AssignOrderAsync(Guid orderId, Guid assignedToUserId, string assignedRole, CancellationToken cancellationToken = default);
+    Task<PagedResult<OrderDto>> GetPendingPaymentOrdersAsync(int page = 1, int pageSize = 10, CancellationToken cancellationToken = default);
+    Task<PagedResult<OrderDto>> GetOrdersWithReturnsAsync(int page = 1, int pageSize = 10, CancellationToken cancellationToken = default);
 }

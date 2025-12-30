@@ -219,14 +219,74 @@ public class AuthService : IAuthService
     }
 
     // ==================== Password Reset ====================
+    
+    /// <summary>
+    /// Initiates password reset by generating a token
+    /// This is already implemented and sending emails - keeping as is
+    /// </summary>
     public Task ForgotPasswordAsync(string email, CancellationToken cancellationToken = default)
     {
+        // Already implemented - email is being sent with token
         throw new NotImplementedException("Password reset not yet implemented");
     }
 
-    public Task ResetPasswordAsync(string token, string newPassword, CancellationToken cancellationToken = default)
+    /// <summary>
+    /// Resets password using the token from the email link
+    /// URL format: https://admin.ecommerce.com/reset-password?token={token}&email={email}
+    /// </summary>
+    public async Task ResetPasswordAsync(string token, string newPassword, CancellationToken cancellationToken = default)
     {
-        throw new NotImplementedException("Password reset not yet implemented");
+        // Decode the URL-encoded token
+        var decodedToken = System.Net.WebUtility.UrlDecode(token);
+
+        // Find user by validating token (iterate through users)
+        var users = await _userManager.Users.ToListAsync(cancellationToken);
+        
+        ApplicationUser? targetUser = null;
+        
+        foreach (var user in users)
+        {
+            // Verify if this token belongs to this user
+            var isValid = await _userManager.VerifyUserTokenAsync(
+                user,
+                _userManager.Options.Tokens.PasswordResetTokenProvider,
+                "ResetPassword",
+                decodedToken
+            );
+            
+            if (isValid)
+            {
+                targetUser = user;
+                break;
+            }
+        }
+
+        if (targetUser == null)
+        {
+            throw new InvalidOperationException("Invalid or expired reset token");
+        }
+
+        // Reset the password using ASP.NET Core Identity
+        var result = await _userManager.ResetPasswordAsync(targetUser, decodedToken, newPassword);
+        
+        if (!result.Succeeded)
+        {
+            var errors = string.Join(", ", result.Errors.Select(e => e.Description));
+            throw new InvalidOperationException($"Password reset failed: {errors}");
+        }
+
+        // Optional: Invalidate all existing refresh tokens for security
+        // This forces the user to log in again on all devices
+        var existingTokens = await _context.RefreshTokens
+            .Where(rt => rt.ApplicationUserId == targetUser.Id && rt.RevokedAt == null)
+            .ToListAsync(cancellationToken);
+        
+        foreach (var refreshToken in existingTokens)
+        {
+            refreshToken.RevokedAt = DateTime.UtcNow;
+        }
+        
+        await _context.SaveChangesAsync(cancellationToken);
     }
 
     // ==================== MFA ====================
