@@ -8,7 +8,7 @@ public class InventoryConfiguration
     /// <summary>
     /// Maximum quantity that can be reserved in a single reservation
     /// </summary>
-    public int MaxReservationQuantity { get; set; } = 10;
+    public int MaxReservationQuantity { get; set; } = 100;
     
     /// <summary>
     /// Minimum quantity that can be reserved in a single reservation

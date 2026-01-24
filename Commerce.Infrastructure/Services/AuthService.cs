@@ -1,3 +1,4 @@
+using Commerce.Application.Common.Interfaces;
 using Commerce.Application.Features.Auth;
 using Commerce.Application.Features.Auth.DTOs;
 using Commerce.Domain.Entities.Users;
@@ -20,17 +21,20 @@ public class AuthService : IAuthService
     private readonly SignInManager<ApplicationUser> _signInManager;
     private readonly CommerceDbContext _context;
     private readonly IConfiguration _configuration;
+    private readonly IEmailService _emailService;
 
     public AuthService(
         UserManager<ApplicationUser> userManager,
         SignInManager<ApplicationUser> signInManager,
         CommerceDbContext context,
-        IConfiguration configuration)
+        IConfiguration configuration,
+        IEmailService emailService)
     {
         _userManager = userManager;
         _signInManager = signInManager;
         _context = context;
         _configuration = configuration;
+        _emailService = emailService;
     }
 
     public async Task<AuthResponse> RegisterAsync(RegisterRequest request, CancellationToken cancellationToken = default)
@@ -224,21 +228,34 @@ public class AuthService : IAuthService
     /// Initiates password reset by generating a token
     /// This is already implemented and sending emails - keeping as is
     /// </summary>
-    public Task ForgotPasswordAsync(string email, CancellationToken cancellationToken = default)
+    public async Task ForgotPasswordAsync(string email, CancellationToken cancellationToken = default)
     {
-        // Already implemented - email is being sent with token
-        throw new NotImplementedException("Password reset not yet implemented");
+        var user = await _userManager.FindByEmailAsync(email);
+        
+        // Don't reveal if user exists for security (timing attack prevention)
+        if (user == null)
+            return;
+        
+        // Generate password reset token
+        var resetToken = await _userManager.GeneratePasswordResetTokenAsync(user);
+        
+        // Build reset link using AdminAppUrl from configuration
+        var adminAppUrl = _configuration["AdminAppUrl"] ?? "http://localhost:3000";
+        var resetLink = $"{adminAppUrl}/auth/reset-password?token={Uri.EscapeDataString(resetToken)}&email={Uri.EscapeDataString(user.Email!)}";
+        
+        // Send forgot password email
+        await _emailService.SendForgotPasswordEmailAsync(user.Email!, resetLink, cancellationToken);
     }
 
     /// <summary>
     /// Resets password using the token from the email link
-    /// URL format: https://admin.ecommerce.com/reset-password?token={token}&email={email}
+    /// URL format: https://admin.ecommerce.com/auth/reset-password?token={token}&email={email}
     /// </summary>
     public async Task ResetPasswordAsync(string token, string newPassword, CancellationToken cancellationToken = default)
     {
-        // Decode the URL-encoded token
-        var decodedToken = System.Net.WebUtility.UrlDecode(token);
-
+        // Note: Token is already URL-decoded by the browser/frontend when extracted from URL
+        // Do NOT decode again as it will corrupt the token
+        
         // Find user by validating token (iterate through users)
         var users = await _userManager.Users.ToListAsync(cancellationToken);
         
@@ -251,7 +268,7 @@ public class AuthService : IAuthService
                 user,
                 _userManager.Options.Tokens.PasswordResetTokenProvider,
                 "ResetPassword",
-                decodedToken
+                token  // Use token directly without decoding
             );
             
             if (isValid)
@@ -267,7 +284,7 @@ public class AuthService : IAuthService
         }
 
         // Reset the password using ASP.NET Core Identity
-        var result = await _userManager.ResetPasswordAsync(targetUser, decodedToken, newPassword);
+        var result = await _userManager.ResetPasswordAsync(targetUser, token, newPassword);  // Use token directly
         
         if (!result.Succeeded)
         {

@@ -35,13 +35,19 @@ public class OrderDto
     // Customer info
     public string? CustomerEmail { get; set; }
     public string? CustomerName { get; set; }
+    public string? CustomerPhone { get; set; }
     
     public List<OrderItemDto> Items { get; set; } = new();
     
     public DateTime? ConfirmedAt { get; set; }
+    public DateTime? ProcessingAt { get; set; }
     public DateTime? ShippedAt { get; set; }
     public DateTime? DeliveredAt { get; set; }
+    public DateTime? ReturnedAt { get; set; }
+    public DateTime? RefundedAt { get; set; }
     public DateTime? CancelledAt { get; set; }
+    
+    public bool IsReturnRequested { get; set; }
 }
 
 public class OrderItemDto
@@ -53,6 +59,13 @@ public class OrderItemDto
     public int Quantity { get; set; }
     public decimal UnitPrice { get; set; }
     public decimal SubTotal { get; set; }
+    
+    // Discount distribution fields
+    public decimal? DiscountAllocated { get; set; }
+    public decimal? DiscountPerUnit { get; set; }
+    public decimal? EffectivePrice { get; set; }
+    public decimal? DiscountDistributionPercentage { get; set; }
+    public int ReturnedQuantity { get; set; }
 }
 
 public class PlaceOrderRequest
@@ -68,7 +81,8 @@ public class OrderFilterRequest
     public PaymentMethod? PaymentMethod { get; set; }
     public DateTime? FromDate { get; set; }
     public DateTime? ToDate { get; set; }
-    public Guid? UserId { get; set; }
+    public Guid? UserId { get; set; } // Customer User ID
+    public Guid? AssignedToUserId { get; set; } // Staff User ID
     public string? OrderNumber { get; set; }
     public int Page { get; set; } = 1;
     public int PageSize { get; set; } = 10;

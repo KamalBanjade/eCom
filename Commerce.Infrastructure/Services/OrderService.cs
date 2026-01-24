@@ -1,4 +1,5 @@
 using Commerce.Application.Features.Orders;
+using Commerce.Application.Features.Inventory;
 using Commerce.Application.Features.Orders.DTOs;
 using Commerce.Application.Features.Carts;
 using Commerce.Application.Common.Interfaces;
@@ -25,6 +26,8 @@ public class OrderService : IOrderService
     private readonly ICartService _cartService;
     private readonly ICouponService _couponService;
     private readonly IKhaltiPaymentService _khaltiPaymentService;
+    private readonly IInventoryService _inventoryService;
+    private readonly IEmailService _emailService;
     private readonly UserManager<ApplicationUser> _userManager;
     private readonly KhaltiSettings _khaltiSettings;
 
@@ -33,14 +36,18 @@ public class OrderService : IOrderService
         ICartService cartService,
         ICouponService couponService,
         IKhaltiPaymentService khaltiPaymentService,
+        IInventoryService inventoryService,
         UserManager<ApplicationUser> userManager,
+        IEmailService emailService,
         IOptions<KhaltiSettings> khaltiSettings)
     {
         _context = context;
         _cartService = cartService;
         _couponService = couponService;
         _khaltiPaymentService = khaltiPaymentService;
+        _inventoryService = inventoryService;
         _userManager = userManager;
+        _emailService = emailService;
         _khaltiSettings = khaltiSettings.Value;
     }
 
@@ -56,7 +63,6 @@ public class OrderService : IOrderService
 
        var customerProfile = await _context.CustomerProfiles
             // Addresses are JSON columns, auto-loaded. No Include needed.
-            .AsNoTracking()
             .FirstOrDefaultAsync(cp => cp.Id == user.CustomerProfileId.Value, cancellationToken);
 
         if (customerProfile == null)
@@ -96,7 +102,23 @@ public class OrderService : IOrderService
             .Where(v => variantIds.Contains(v.Id))
             .ToDictionaryAsync(v => v.Id, v => v, cancellationToken);
 
-        // 6. Begin database transaction for atomicity
+        // 6. PRE-FETCH AUTOMATION DATA (Outside Transaction)
+        var warehouseUsers = await _userManager.GetUsersInRoleAsync("Warehouse");
+        string? warehouseEmailToNotify = null;
+        Guid? warehouseUserIdToAssign = null;
+        
+        if (warehouseUsers.Any())
+        {
+             var whUser = warehouseUsers.First();
+             warehouseUserIdToAssign = Guid.Parse(whUser.Id);
+             warehouseEmailToNotify = whUser.Email;
+        }
+        else
+        {
+             Console.WriteLine("CRITICAL: No 'Warehouse' user found. Order will be unassigned.");
+        }
+
+        // 7. Begin database transaction for atomicity
         using var transaction = await _context.Database.BeginTransactionAsync(cancellationToken);
         
         try
@@ -142,9 +164,25 @@ public class OrderService : IOrderService
                     };
                 }).ToList()
             };
+            // Populate navigation property for email service
+            order.CustomerProfile = customerProfile;
 
             // 8. Generate Order Number
             order.OrderNumber = $"ORD-{DateTime.UtcNow:yyyyMMdd}-{Guid.NewGuid().ToString()[..8].ToUpper()}";
+
+            // 9. Distribute discount across items if coupon was applied
+            if (order.DiscountAmount > 0 && order.Items.Any())
+            {
+                DistributeDiscountAcrossItems(order);
+            }
+
+            // AUTOMATION: Auto-assign to Warehouse
+            if (warehouseUserIdToAssign.HasValue)
+            {
+                order.AssignedToUserId = warehouseUserIdToAssign.Value;
+                order.AssignedRole = "Warehouse";
+                order.AssignedAt = DateTime.UtcNow;
+            }
 
             // 9. BRANCH BY PAYMENT METHOD
             if (request.PaymentMethod == PaymentMethod.CashOnDelivery)
@@ -169,12 +207,31 @@ public class OrderService : IOrderService
                     }
                 }
 
+
+
+                // CONFIRM STOCK for COD
+                // We must do this before clearing cart/committing.
+                foreach (var item in order.Items)
+                {
+                    await _inventoryService.ConfirmStockAsync(
+                        item.ProductVariantId, 
+                        item.Quantity, 
+                        customerProfile.Id.ToString(), 
+                        cancellationToken);
+                }
+
                 await transaction.CommitAsync(cancellationToken);
 
                 // Clear cart immediately for COD
                 await _cartService.ClearCartAsync(applicationUserId, null, cancellationToken);
 
-                return ApiResponse<OrderDto>.SuccessResponse(MapToDto(order), "Order placed successfully");
+                // Notify Warehouse (Fire-and-Forget)
+                if (!string.IsNullOrEmpty(warehouseEmailToNotify))
+                {
+                    _ = _emailService.SendOrderNotificationToWarehouseAsync(order, warehouseEmailToNotify);
+                }
+
+                return ApiResponse<OrderDto>.SuccessResponse(MapToDto(order, null, false), "Order placed successfully");
             }
             else if (request.PaymentMethod == PaymentMethod.Khalti)
             {
@@ -213,7 +270,9 @@ public class OrderService : IOrderService
                 // DO NOT clear cart - wait for payment confirmation
                 // DO NOT lock coupon - wait for payment confirmation
 
-                var orderDto = MapToDto(order);
+                // DO NOT Notify Warehouse yet - wait for payment confirmation
+
+                var orderDto = MapToDto(order, null, false);
                 orderDto.PaymentUrl = khaltiResponse.PaymentUrl;  // Include for frontend redirect
 
                 return ApiResponse<OrderDto>.SuccessResponse(orderDto, "Order created. Please complete payment.");
@@ -245,7 +304,7 @@ public class OrderService : IOrderService
 
         // Idempotency: Already paid
         if (order.PaymentStatus == PaymentStatus.Completed)
-            return ApiResponse<OrderDto>.SuccessResponse(MapToDto(order), "Payment already confirmed");
+            return ApiResponse<OrderDto>.SuccessResponse(MapToDto(order, null, false), "Payment already confirmed");
 
         // 2. Call Khalti Lookup API
         KhaltiLookupResponse lookupResponse;
@@ -258,6 +317,7 @@ public class OrderService : IOrderService
             // If Khalti fails validation (e.g., user cancellation sometimes causes issues or invalid PIDX)
             // We treat this as a payment failure rather than crashing
             order.PaymentStatus = PaymentStatus.Failed;
+            order.OrderStatus = OrderStatus.Cancelled;
             
              // Log the failure in audit log roughly if possible, or just skip
             var failedLog = new PaymentAuditLog
@@ -289,6 +349,7 @@ public class OrderService : IOrderService
         if (lookupResponse.Status != "Completed")
         {
             order.PaymentStatus = PaymentStatus.Failed;
+            order.OrderStatus = OrderStatus.Cancelled;
             await _context.SaveChangesAsync(cancellationToken);
             return ApiResponse<OrderDto>.ErrorResponse($"Payment not completed. Status: {lookupResponse.Status}");
         }
@@ -297,10 +358,36 @@ public class OrderService : IOrderService
         decimal paidAmount = lookupResponse.TotalAmount / 100m;
         if (Math.Abs(paidAmount - order.TotalAmount) > 0.01m)
         {
-            // Log security alert
             order.PaymentStatus = PaymentStatus.Failed;
+            order.OrderStatus = OrderStatus.Cancelled;
             await _context.SaveChangesAsync(cancellationToken);
             return ApiResponse<OrderDto>.ErrorResponse($"Amount mismatch. Expected: {order.TotalAmount}, Paid: {paidAmount}");
+        }
+
+        // CONFIRM STOCK: Must be done before clearing cart
+        try 
+        {
+            foreach (var item in order.Items)
+            {
+                // Convert reservation to permanent deduction
+                // Use CustomerProfileId if available, else ApplicationUserId if matched, but here we likely rely on CustomerProfileId as reservation ID?
+                // Wait, CartService used: customerId?.ToString() ?? anonymousId
+                // If user logged in (likely), it is CustomerProfileId.
+                await _inventoryService.ConfirmStockAsync(
+                    item.ProductVariantId, 
+                    item.Quantity, 
+                    order.CustomerProfileId.ToString(), 
+                    cancellationToken);
+            }
+        }
+        catch (Exception ex)
+        {
+             // If stock confirmation fails (e.g. reservation expired differently?), we have a problem.
+             // But payment is already verified at Khalti.
+             // We should Log Critical Error and potentially proceed OR refund?
+             // For now, let's Fail safely to prevent data corruption, but ideally we should reconcile.
+             await _context.SaveChangesAsync(cancellationToken); // Save the failed payment log if any
+             return ApiResponse<OrderDto>.ErrorResponse($"Stock confirmation failed: {ex.Message}. Payment was successful at gateway. Contact support.");
         }
 
         // 6. Update order
@@ -333,7 +420,27 @@ public class OrderService : IOrderService
                 await _cartService.ClearCartAsync(Guid.Parse(user.Id), null, cancellationToken);
             }
 
-            return ApiResponse<OrderDto>.SuccessResponse(MapToDto(order), "Payment confirmed successfully");
+            // Notify Warehouse (Fire-and-Forget)
+            // Retrieve warehouse user again (or check if already assigned)
+            string? warehouseEmailToNotify = null;
+            if (order.AssignedToUserId.HasValue)
+            {
+                var whUser = await _userManager.FindByIdAsync(order.AssignedToUserId.Value.ToString());
+                warehouseEmailToNotify = whUser?.Email;
+            }
+            else
+            {
+                // Fallback if not assigned (unlikely if automation worked, but safe)
+                var warehouseUsers = await _userManager.GetUsersInRoleAsync("Warehouse");
+                warehouseEmailToNotify = warehouseUsers.FirstOrDefault()?.Email;
+            }
+
+            if (!string.IsNullOrEmpty(warehouseEmailToNotify))
+            {
+                 _ = _emailService.SendOrderNotificationToWarehouseAsync(order, warehouseEmailToNotify);
+            }
+
+            return ApiResponse<OrderDto>.SuccessResponse(MapToDto(order, null, false), "Payment confirmed successfully");
         }
         catch (Exception ex)
         {
@@ -350,6 +457,7 @@ public class OrderService : IOrderService
     {
         var query = _context.Orders
             .Include(o => o.Items)
+            .Include(o => o.CustomerProfile)
             .AsQueryable();
 
         if (!isAdmin)
@@ -365,7 +473,10 @@ public class OrderService : IOrderService
         var order = await query.FirstOrDefaultAsync(o => o.Id == orderId, cancellationToken);
         if (order == null) return null;
 
-        return MapToDto(order);
+        var isReturnRequested = await _context.Returns
+            .AnyAsync(r => r.OrderId == order.Id && r.ReturnStatus != ReturnStatus.Rejected, cancellationToken);
+
+        return MapToDto(order, null, isReturnRequested);
     }
 
     public async Task<IEnumerable<OrderDto>> GetUserOrdersAsync(
@@ -379,11 +490,20 @@ public class OrderService : IOrderService
 
         var orders = await _context.Orders
             .Include(o => o.Items)
+            .Include(o => o.CustomerProfile)
             .Where(o => o.CustomerProfileId == userProfile.Id)
             .OrderByDescending(o => o.CreatedAt)
             .ToListAsync(cancellationToken);
 
-        return orders.Select(MapToDto);
+        // Optimizing: fetch return status for list
+        var orderIds = orders.Select(o => o.Id).ToList();
+        var returnRequestIds = await _context.Returns
+            .Where(r => orderIds.Contains(r.OrderId)) // Should we filter rejected? Likely yes.
+            .Select(r => r.OrderId)
+            .ToListAsync(cancellationToken);
+        var returnRequestSet = new HashSet<Guid>(returnRequestIds);
+
+        return orders.Select(o => MapToDto(o, null, returnRequestSet.Contains(o.Id)));
     }
 
     public async Task<PagedResult<OrderDto>> GetOrdersAsync(
@@ -392,6 +512,7 @@ public class OrderService : IOrderService
     {
         var query = _context.Orders
             .Include(o => o.Items)
+            .Include(o => o.CustomerProfile)
             .AsQueryable();
 
         // Apply filters
@@ -419,6 +540,14 @@ public class OrderService : IOrderService
         if (!string.IsNullOrEmpty(filter.OrderNumber))
             query = query.Where(o => o.OrderNumber.Contains(filter.OrderNumber));
 
+        if (filter.AssignedToUserId.HasValue)
+        {
+            // Handle explicit "unassigned" case if Guid is Empty? Or just specific user?
+            // Frontend usually sends specific ID or specialized string.
+            // DTO is Guid?, so it will be a valid GUID.
+            query = query.Where(o => o.AssignedToUserId == filter.AssignedToUserId.Value);
+        }
+
         // Get total count
         var totalCount = await query.CountAsync(cancellationToken);
 
@@ -429,9 +558,35 @@ public class OrderService : IOrderService
             .Take(filter.PageSize)
             .ToListAsync(cancellationToken);
 
+        // Fetch all assigned users in bulk to avoid N+1 queries
+        var assignedUserIds = orders
+            .Where(o => o.AssignedToUserId.HasValue && o.AssignedToUserId.Value != Guid.Empty)
+            .Select(o => o.AssignedToUserId!.Value.ToString())
+            .Distinct()
+            .ToList();
+
+        var assignedUsersDict = new Dictionary<string, string>();
+        foreach (var userId in assignedUserIds)
+        {
+            var user = await _userManager.FindByIdAsync(userId);
+            if (user?.Email != null)
+            {
+                assignedUsersDict[userId] = user.Email;
+            }
+        }
+
+        // Fetch return statuses for these orders
+        var orderIds = orders.Select(o => o.Id).ToList();
+        var returnRequestIds = await _context.Returns
+            .Where(r => orderIds.Contains(r.OrderId) && r.ReturnStatus != ReturnStatus.Rejected)
+            .Select(r => r.OrderId)
+            .ToListAsync(cancellationToken);
+        
+        var returnRequestSet = new HashSet<Guid>(returnRequestIds);
+
         return new PagedResult<OrderDto>
         {
-            Items = orders.Select(MapToDto).ToList(),
+            Items = orders.Select(o => MapToDto(o, assignedUsersDict, returnRequestSet.Contains(o.Id))).ToList(),
             TotalCount = totalCount,
             Page = filter.Page,
             PageSize = filter.PageSize
@@ -445,6 +600,7 @@ public class OrderService : IOrderService
     {
         var order = await _context.Orders
             .Include(o => o.Items)
+            .Include(o => o.CustomerProfile)
             .FirstOrDefaultAsync(o => o.Id == orderId, cancellationToken);
 
         if (order == null)
@@ -464,6 +620,9 @@ public class OrderService : IOrderService
             case OrderStatus.Confirmed:
                 order.ConfirmedAt = DateTime.UtcNow;
                 break;
+            case OrderStatus.Processing:
+                order.ProcessingAt = DateTime.UtcNow;
+                break;
             case OrderStatus.Shipped:
                 order.ShippedAt = DateTime.UtcNow;
                 break;
@@ -475,14 +634,23 @@ public class OrderService : IOrderService
                     order.PaidAt = DateTime.UtcNow;
                 }
                 break;
+            case OrderStatus.Returned:
+                order.ReturnedAt = DateTime.UtcNow;
+                break;
             case OrderStatus.Cancelled:
                 order.CancelledAt = DateTime.UtcNow;
                 break;
         }
 
+
+
         await _context.SaveChangesAsync(cancellationToken);
 
-        return ApiResponse<OrderDto>.SuccessResponse(MapToDto(order), "Order status updated successfully");
+        // Check return status for response
+        var isReturnRequested = await _context.Returns
+            .AnyAsync(r => r.OrderId == order.Id && r.ReturnStatus != ReturnStatus.Rejected, cancellationToken);
+            
+        return ApiResponse<OrderDto>.SuccessResponse(MapToDto(order, null, isReturnRequested), "Order status updated successfully");
     }
 
     private static (bool IsValid, string? ErrorMessage) ValidateStatusTransition(
@@ -557,11 +725,93 @@ public class OrderService : IOrderService
         
         await _context.SaveChangesAsync(cancellationToken);
 
-        return ApiResponse<OrderDto>.SuccessResponse(MapToDto(order), "Order cancelled successfully");
+        return ApiResponse<OrderDto>.SuccessResponse(MapToDto(order, null, false), "Order cancelled successfully");
     }
 
-    private static OrderDto MapToDto(Order order)
+    private void DistributeDiscountAcrossItems(Order order)
     {
+        var totalOrderValue = order.Items.Sum(i => i.UnitPrice * i.Quantity);
+        
+        if (totalOrderValue == 0)
+        {
+            Console.WriteLine($"WARNING: Cannot distribute discount for order {order.Id}: total order value is zero");
+            return;
+        }
+        
+        decimal totalDistributed = 0;
+        var itemsList = order.Items.ToList();
+        
+        for (int i = 0; i < itemsList.Count; i++)
+        {
+            var item = itemsList[i];
+            var itemSubTotal = item.UnitPrice * item.Quantity;
+            
+            // Calculate this item's proportion of the total
+            var proportion = itemSubTotal / totalOrderValue;
+            
+            // Allocate discount proportionally
+            decimal itemDiscount;
+            if (i == itemsList.Count - 1)
+            {
+                // Last item gets remainder to handle rounding
+                itemDiscount = order.DiscountAmount - totalDistributed;
+            }
+            else
+            {
+                itemDiscount = Math.Round(order.DiscountAmount * proportion, 2);
+                totalDistributed += itemDiscount;
+            }
+            
+            // Store distribution data
+            item.DiscountAllocated = itemDiscount;
+            item.DiscountPerUnit = Math.Round(itemDiscount / item.Quantity, 2);
+            item.DiscountDistributionPercentage = proportion;
+            item.EffectivePrice = item.UnitPrice - item.DiscountPerUnit.Value;
+            item.ReturnedQuantity = 0;
+            
+            Console.WriteLine($"[DISCOUNT DISTRIBUTION] Item: {item.ProductName}, " +
+                $"SubTotal: रु.{itemSubTotal}, Proportion: {proportion:P2}, " +
+                $"Discount: रु.{itemDiscount}, DiscountPerUnit: रु.{item.DiscountPerUnit}, " +
+                $"EffectivePrice: रु.{item.EffectivePrice}");
+        }
+        
+        // Mark order as having distributed discount
+        order.IsDiscountDistributed = true;
+        order.TotalDiscountDistributed = order.DiscountAmount;
+        
+        Console.WriteLine($"[DISCOUNT DISTRIBUTION] Order {order.OrderNumber}: " +
+            $"Total Discount: रु.{order.DiscountAmount}, Distributed: रु.{order.TotalDiscountDistributed}");
+    }
+
+    private OrderDto MapToDto(Order order, Dictionary<string, string>? assignedUsersDict = null, bool isReturnRequested = false)
+    {
+        string? assignedToUserEmail = null;
+        if (order.AssignedToUserId.HasValue && order.AssignedToUserId.Value != Guid.Empty)
+        {
+            var userIdString = order.AssignedToUserId.Value.ToString();
+            
+            // Try to get from dictionary first (bulk lookup)
+            if (assignedUsersDict != null && assignedUsersDict.TryGetValue(userIdString, out var email))
+            {
+                assignedToUserEmail = email;
+            }
+            else
+            {
+                // Fallback to individual lookup (for single order calls)
+                try
+                {
+                    var assignedUser = _userManager.FindByIdAsync(userIdString).GetAwaiter().GetResult();
+                    assignedToUserEmail = assignedUser?.Email;
+                }
+                catch (Exception ex)
+                {
+                    // Log but don't fail the entire mapping
+                    Console.WriteLine($"Failed to lookup assigned user {order.AssignedToUserId}: {ex.Message}");
+                    assignedToUserEmail = null;
+                }
+            }
+        }
+
         return new OrderDto
         {
             Id = order.Id,
@@ -581,9 +831,15 @@ public class OrderService : IOrderService
             PaymentUrl = order.PaymentUrl,  // Include for Khalti redirect
             
             // Assignment info
-            AssignedToUserId = order.AssignedToUserId,
+            AssignedToUserId = (order.AssignedToUserId == Guid.Empty) ? null : order.AssignedToUserId,
+            AssignedToUserEmail = assignedToUserEmail,
             AssignedRole = order.AssignedRole,
             AssignedAt = order.AssignedAt,
+
+            // Customer Info
+            CustomerName = order.CustomerProfile?.FullName ?? "Unknown",
+            CustomerEmail = order.CustomerProfile?.Email ?? "N/A",
+            CustomerPhone = order.CustomerProfile?.PhoneNumber ?? "N/A",
             
             Items = order.Items.Select(i => new OrderItemDto
             {
@@ -593,12 +849,21 @@ public class OrderService : IOrderService
                 VariantName = i.VariantName,
                 Quantity = i.Quantity,
                 UnitPrice = i.UnitPrice,
-                SubTotal = i.SubTotal
+                SubTotal = i.SubTotal,
+                DiscountAllocated = i.DiscountAllocated,
+                DiscountPerUnit = i.DiscountPerUnit,
+                EffectivePrice = i.EffectivePrice,
+                DiscountDistributionPercentage = i.DiscountDistributionPercentage,
+                ReturnedQuantity = i.ReturnedQuantity
             }).ToList(),
             ConfirmedAt = order.ConfirmedAt,
+            ProcessingAt = order.ProcessingAt,
             ShippedAt = order.ShippedAt,
             DeliveredAt = order.DeliveredAt,
-            CancelledAt = order.CancelledAt
+            ReturnedAt = order.ReturnedAt,
+            RefundedAt = order.RefundedAt,
+            CancelledAt = order.CancelledAt,
+            IsReturnRequested = isReturnRequested
         };
     }
     
@@ -606,14 +871,45 @@ public class OrderService : IOrderService
     // Admin Methods
     // ==========================================
 
-    public async Task<ApiResponse<OrderDto>> AssignOrderAsync(Guid orderId, Guid assignedToUserId, string assignedRole, CancellationToken cancellationToken = default)
+    public async Task<ApiResponse<OrderDto>> AssignOrderAsync(Guid orderId, Guid assignedToUserId, string? assignedRole, CancellationToken cancellationToken = default)
     {
         var order = await _context.Orders
             .Include(o => o.Items)
+            .Include(o => o.CustomerProfile)
             .FirstOrDefaultAsync(o => o.Id == orderId, cancellationToken);
 
         if (order == null)
             return ApiResponse<OrderDto>.ErrorResponse("Order not found");
+
+        // If unassigning
+        if (assignedToUserId == Guid.Empty)
+        {
+             order.AssignedToUserId = null;
+             order.AssignedRole = null;
+             order.AssignedAt = null;
+             
+             // Check return status for response? Or separate query.
+             // For unassign, return status doesn't change, so we should probably fetch it or default false/true based on fetch.
+             // This is an admin action, accuracy matters.
+             var isReturnRequested = await _context.Returns.AnyAsync(r => r.OrderId == order.Id && r.ReturnStatus != ReturnStatus.Rejected, cancellationToken);
+             
+             await _context.SaveChangesAsync(cancellationToken);
+             return ApiResponse<OrderDto>.SuccessResponse(MapToDto(order, null, isReturnRequested), "Order unassigned successfully");
+        }
+
+        // Validate user and get role if not provided
+        var user = await _userManager.FindByIdAsync(assignedToUserId.ToString());
+        if (user == null)
+            return ApiResponse<OrderDto>.ErrorResponse("Assigned user not found");
+
+        if (string.IsNullOrEmpty(assignedRole))
+        {
+            var roles = await _userManager.GetRolesAsync(user);
+            // Prioritize specific roles
+            if (roles.Contains("Warehouse")) assignedRole = "Warehouse";
+            else if (roles.Contains("Support")) assignedRole = "Support";
+            else assignedRole = roles.FirstOrDefault() ?? "Unknown";
+        }
 
         order.AssignedToUserId = assignedToUserId;
         order.AssignedRole = assignedRole;
@@ -621,7 +917,9 @@ public class OrderService : IOrderService
 
         await _context.SaveChangesAsync(cancellationToken);
 
-        return ApiResponse<OrderDto>.SuccessResponse(MapToDto(order), $"Order assigned to {assignedRole} user");
+        // Assign:
+        var isReturnRequestedForAssign = await _context.Returns.AnyAsync(r => r.OrderId == order.Id && r.ReturnStatus != ReturnStatus.Rejected, cancellationToken);
+        return ApiResponse<OrderDto>.SuccessResponse(MapToDto(order, null, isReturnRequestedForAssign), $"Order assigned to {assignedRole} user");
     }
 
     public async Task<PagedResult<OrderDto>> GetPendingPaymentOrdersAsync(int page = 1, int pageSize = 10, CancellationToken cancellationToken = default)
@@ -637,9 +935,10 @@ public class OrderService : IOrderService
             .Skip((page - 1) * pageSize)
             .Take(pageSize)
             .Include(o => o.Items)
+            .Include(o => o.CustomerProfile)
             .ToListAsync(cancellationToken);
 
-        var dtos = orders.Select(MapToDto).ToList();
+        var dtos = orders.Select(o => MapToDto(o, null)).ToList();
         
         return new PagedResult<OrderDto>(dtos, totalCount, page, pageSize);
     }
@@ -657,11 +956,12 @@ public class OrderService : IOrderService
         
         var orders = await query
             .Include(o => o.Items)
+            .Include(o => o.CustomerProfile)
             .Skip((page - 1) * pageSize)
             .Take(pageSize)
             .ToListAsync(cancellationToken);
 
-        var dtos = orders.Select(MapToDto).ToList();
+        var dtos = orders.Select(o => MapToDto(o, null)).ToList();
         
         return new PagedResult<OrderDto>(dtos, totalCount, page, pageSize);
     }

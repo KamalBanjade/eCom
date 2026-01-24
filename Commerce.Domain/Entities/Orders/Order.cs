@@ -28,6 +28,10 @@ public class Order : BaseEntity
     // Coupon snapshot
     public string? AppliedCouponCode { get; set; }
     
+    // Discount distribution tracking (for audit and verification)
+    public bool IsDiscountDistributed { get; set; }
+    public decimal TotalDiscountDistributed { get; set; }
+    
     // Khalti payment fields
     public string? Pidx { get; set; }           // Khalti payment identifier
     public string? PaymentUrl { get; set; }     // Khalti checkout URL
@@ -45,7 +49,10 @@ public class Order : BaseEntity
     public ICollection<OrderItem> Items { get; set; } = new List<OrderItem>();
     
     public DateTime? ConfirmedAt { get; set; }
+    public DateTime? ProcessingAt { get; set; }
     public DateTime? ShippedAt { get; set; }
     public DateTime? DeliveredAt { get; set; }
+    public DateTime? ReturnedAt { get; set; }
+    public DateTime? RefundedAt { get; set; }
     public DateTime? CancelledAt { get; set; }
 }

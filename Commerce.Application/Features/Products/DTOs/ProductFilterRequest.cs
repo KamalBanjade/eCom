@@ -23,6 +23,7 @@ public class ProductFilterRequest
 /// </summary>
 public class AdjustStockRequest
 {
+    public Guid? VariantId { get; set; } // Added for specific variant adjustment
     public int QuantityChange { get; set; } // Positive for increase, negative for decrease
     public string Reason { get; set; } = string.Empty;
 }

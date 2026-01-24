@@ -222,6 +222,9 @@ namespace Commerce.Infrastructure.Migrations
                     b.Property<decimal>("DiscountAmount")
                         .HasColumnType("numeric");
 
+                    b.Property<bool>("IsDiscountDistributed")
+                        .HasColumnType("boolean");
+
                     b.Property<string>("OrderNumber")
                         .IsRequired()
                         .HasMaxLength(50)
@@ -245,6 +248,15 @@ namespace Commerce.Infrastructure.Migrations
                     b.Property<string>("Pidx")
                         .HasColumnType("text");
 
+                    b.Property<DateTime?>("ProcessingAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTime?>("RefundedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTime?>("ReturnedAt")
+                        .HasColumnType("timestamp with time zone");
+
                     b.Property<DateTime?>("ShippedAt")
                         .HasColumnType("timestamp with time zone");
 
@@ -267,6 +279,9 @@ namespace Commerce.Infrastructure.Migrations
                     b.Property<decimal>("TotalAmount")
                         .HasPrecision(18, 2)
                         .HasColumnType("numeric(18,2)");
+
+                    b.Property<decimal>("TotalDiscountDistributed")
+                        .HasColumnType("numeric");
 
                     b.Property<DateTime>("UpdatedAt")
                         .HasColumnType("timestamp with time zone");
@@ -298,6 +313,18 @@ namespace Commerce.Infrastructure.Migrations
                     b.Property<DateTime>("CreatedAt")
                         .HasColumnType("timestamp with time zone");
 
+                    b.Property<decimal?>("DiscountAllocated")
+                        .HasColumnType("numeric");
+
+                    b.Property<decimal?>("DiscountDistributionPercentage")
+                        .HasColumnType("numeric");
+
+                    b.Property<decimal?>("DiscountPerUnit")
+                        .HasColumnType("numeric");
+
+                    b.Property<decimal?>("EffectivePrice")
+                        .HasColumnType("numeric");
+
                     b.Property<Guid>("OrderId")
                         .HasColumnType("uuid");
 
@@ -313,6 +340,9 @@ namespace Commerce.Infrastructure.Migrations
                         .HasColumnType("uuid");
 
                     b.Property<int>("Quantity")
+                        .HasColumnType("integer");
+
+                    b.Property<int>("ReturnedQuantity")
                         .HasColumnType("integer");
 
                     b.Property<decimal>("UnitPrice")
@@ -481,13 +511,12 @@ namespace Commerce.Infrastructure.Migrations
                         .HasPrecision(18, 2)
                         .HasColumnType("numeric(18,2)");
 
-                    b.Property<string>("ImageUrl")
-                        .HasColumnType("text");
+                    b.Property<string>("ImageUrls")
+                        .IsRequired()
+                        .HasColumnType("jsonb");
 
                     b.Property<bool>("IsActive")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("boolean")
-                        .HasDefaultValue(true);
+                        .HasColumnType("boolean");
 
                     b.Property<decimal>("Price")
                         .HasPrecision(18, 2)
@@ -562,6 +591,70 @@ namespace Commerce.Infrastructure.Migrations
                     b.ToTable("Coupons");
                 });
 
+            modelBuilder.Entity("Commerce.Domain.Entities.Sales.ReturnItem", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("AdminNotes")
+                        .HasColumnType("text");
+
+                    b.Property<DateTime?>("ApprovedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Condition")
+                        .HasColumnType("text");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<bool>("IsRestocked")
+                        .HasColumnType("boolean");
+
+                    b.Property<Guid>("OrderItemId")
+                        .HasColumnType("uuid");
+
+                    b.Property<int>("Quantity")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("Reason")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<DateTime?>("ReceivedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTime?>("RefundedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTime?>("RejectedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTime?>("RestockedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid>("ReturnRequestId")
+                        .HasColumnType("uuid");
+
+                    b.Property<int>("Status")
+                        .HasColumnType("integer");
+
+                    b.Property<decimal>("UnitPrice")
+                        .HasColumnType("numeric");
+
+                    b.Property<DateTime>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("OrderItemId");
+
+                    b.HasIndex("ReturnRequestId");
+
+                    b.ToTable("ReturnItem");
+                });
+
             modelBuilder.Entity("Commerce.Domain.Entities.Sales.ReturnRequest", b =>
                 {
                     b.Property<Guid>("Id")
@@ -574,8 +667,14 @@ namespace Commerce.Infrastructure.Migrations
                     b.Property<DateTime?>("AssignedAt")
                         .HasColumnType("timestamp with time zone");
 
+                    b.Property<string>("AssignedRole")
+                        .HasColumnType("text");
+
                     b.Property<Guid?>("AssignedToUserId")
                         .HasColumnType("uuid");
+
+                    b.Property<DateTime?>("InspectionCompletedAt")
+                        .HasColumnType("timestamp with time zone");
 
                     b.Property<string>("KhaltiPidx")
                         .HasColumnType("text");
@@ -583,15 +682,11 @@ namespace Commerce.Infrastructure.Migrations
                     b.Property<Guid>("OrderId")
                         .HasColumnType("uuid");
 
-                    b.Property<string>("Reason")
-                        .IsRequired()
-                        .HasColumnType("text");
+                    b.Property<DateTime?>("PickedUpAt")
+                        .HasColumnType("timestamp with time zone");
 
                     b.Property<DateTime?>("ReceivedAt")
                         .HasColumnType("timestamp with time zone");
-
-                    b.Property<decimal>("RefundAmount")
-                        .HasColumnType("numeric");
 
                     b.Property<int?>("RefundMethod")
                         .HasColumnType("integer");
@@ -604,6 +699,9 @@ namespace Commerce.Infrastructure.Migrations
 
                     b.Property<int>("ReturnStatus")
                         .HasColumnType("integer");
+
+                    b.Property<decimal>("TotalRefundAmount")
+                        .HasColumnType("numeric");
 
                     b.HasKey("Id");
 
@@ -688,6 +786,9 @@ namespace Commerce.Infrastructure.Migrations
 
                     b.Property<string>("GoogleId")
                         .HasColumnType("text");
+
+                    b.Property<bool>("IsActive")
+                        .HasColumnType("boolean");
 
                     b.Property<bool>("LockoutEnabled")
                         .HasColumnType("boolean");
@@ -1052,6 +1153,25 @@ namespace Commerce.Infrastructure.Migrations
                     b.Navigation("Product");
                 });
 
+            modelBuilder.Entity("Commerce.Domain.Entities.Sales.ReturnItem", b =>
+                {
+                    b.HasOne("Commerce.Domain.Entities.Orders.OrderItem", "OrderItem")
+                        .WithMany()
+                        .HasForeignKey("OrderItemId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("Commerce.Domain.Entities.Sales.ReturnRequest", "ReturnRequest")
+                        .WithMany("Items")
+                        .HasForeignKey("ReturnRequestId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("OrderItem");
+
+                    b.Navigation("ReturnRequest");
+                });
+
             modelBuilder.Entity("Commerce.Domain.Entities.Sales.ReturnRequest", b =>
                 {
                     b.HasOne("Commerce.Domain.Entities.Orders.Order", "Order")
@@ -1145,6 +1265,11 @@ namespace Commerce.Infrastructure.Migrations
             modelBuilder.Entity("Commerce.Domain.Entities.Products.Product", b =>
                 {
                     b.Navigation("Variants");
+                });
+
+            modelBuilder.Entity("Commerce.Domain.Entities.Sales.ReturnRequest", b =>
+                {
+                    b.Navigation("Items");
                 });
 
             modelBuilder.Entity("Commerce.Infrastructure.Identity.ApplicationUser", b =>

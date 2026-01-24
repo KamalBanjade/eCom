@@ -28,6 +28,7 @@ public interface IUserManagementService
     /// <returns>Paginated list of users</returns>
     Task<PagedResult<AdminUserDto>> GetInternalUsersAsync(
         AdminUserFilterRequest filter, 
+        string currentUserId,
         CancellationToken cancellationToken = default);
     
     /// <summary>
@@ -51,6 +52,20 @@ public interface IUserManagementService
         string newRole, 
         string updaterUserId, 
         CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Updates a user's active status
+    /// </summary>
+    /// <param name="userId">User ID to update</param>
+    /// <param name="isActive">New status</param>
+    /// <param name="updaterUserId">ID of user performing the update</param>
+    /// <param name="cancellationToken">Cancellation token</param>
+    /// <returns>Updated user details</returns>
+    Task<ApiResponse<AdminUserDto>> UpdateUserStatusAsync(
+        string userId,
+        bool isActive,
+        string updaterUserId,
+        CancellationToken cancellationToken = default);
     
     /// <summary>
     /// Triggers password reset email for a user
@@ -59,4 +74,18 @@ public interface IUserManagementService
     /// <param name="cancellationToken">Cancellation token</param>
     /// <returns>Success status</returns>
     Task<ApiResponse<bool>> TriggerPasswordResetAsync(string userId, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Gets paginated list of external customers with optional filtering
+    /// </summary>
+    /// <param name="filter">Filter parameters</param>
+    /// <param name="cancellationToken">Cancellation token</param>
+    /// <returns>Paginated list of users</returns>
+    Task<PagedResult<AdminUserDto>> GetExternalUsersAsync(
+        AdminUserFilterRequest filter, 
+        CancellationToken cancellationToken = default);
+
+    Task<ApiResponse<CustomerDetailDto>> GetExternalUserDetailAsync(string userId, CancellationToken cancellationToken = default);
+
+    Task<ApiResponse<bool>> DeleteUserAsync(string userId, string requesterId, CancellationToken cancellationToken = default);
 }

@@ -20,4 +20,7 @@ public interface IInventoryService
     
     // Get current available stock (Total - Reserved)
     Task<int> GetAvailableStockAsync(Guid productVariantId, CancellationToken cancellationToken = default);
+
+    // Generic stock adjustment (Manual Admin changes, Restocks, Returns)
+    Task AdjustStockAsync(Guid productVariantId, int quantityChange, string reason, string? userId, CancellationToken cancellationToken = default);
 }

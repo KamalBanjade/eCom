@@ -1,116 +1,151 @@
 using Commerce.Application.Common.Interfaces;
-using StackExchange.Redis;
 using Commerce.Application.Features.Auth;
 using Commerce.Application.Features.Auth.DTOs;
 using Commerce.Application.Features.Carts;
+using Commerce.Application.Features.Inventory;
 using Commerce.Application.Features.Orders;
+using Commerce.Application.Features.Payments;
 using Commerce.Application.Features.Products;
-using Commerce.Application.Features.Users; // ✅ ADDED for IUserManagementService
-using Commerce.Application.Features.Payments; // ✅ ADDED for IPaymentService
+using Commerce.Application.Features.Dashboard;
+using Commerce.Application.Features.Users;
+using Commerce.Domain.Configuration;
+using Commerce.Infrastructure.Configuration;
 using Commerce.Infrastructure.Data;
 using Commerce.Infrastructure.Identity;
 using Commerce.Infrastructure.Repositories;
-using Commerce.Application.Features.Inventory;
 using Commerce.Infrastructure.Services;
 using Commerce.Infrastructure.Settings;
-using Commerce.Infrastructure.Configuration;
-using Commerce.Domain.Configuration;
+using DotNetEnv;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
 using Microsoft.OpenApi.Models;
+using StackExchange.Redis;
 using System.Text;
-using DotNetEnv;
 
-// Load .env file from current or parent directories
+// Load .env file (useful in development when not using secrets/user-secrets)
 Env.TraversePath().Load();
 
 var builder = WebApplication.CreateBuilder(args);
 
-// Bridge .env to Configuration
-var khaltiSecret = Environment.GetEnvironmentVariable("KHALTI_SECRET_KEY");
-var khaltiPublic = Environment.GetEnvironmentVariable("KHALTI_PUBLIC_KEY");
-var googleClientId = Environment.GetEnvironmentVariable("GOOGLE_CLIENT_ID");
-var googleClientSecret = Environment.GetEnvironmentVariable("GOOGLE_CLIENT_SECRET");
+// ========================================
+// 1. Configuration Binding (from appsettings.json + .env + secrets)
+// ========================================
 
-// URLs
-var backendUrl = Environment.GetEnvironmentVariable("BACKEND_URL");
-var frontendUrl = Environment.GetEnvironmentVariable("FRONTEND_URL");
-var adminAppUrl = Environment.GetEnvironmentVariable("ADMIN_APP_URL");
-var googleRedirectUri = Environment.GetEnvironmentVariable("GOOGLE_REDIRECT_URI");
-var khaltiBaseUrl = Environment.GetEnvironmentVariable("KHALTI_BASE_URL");
-var khaltiReturnUrl = Environment.GetEnvironmentVariable("KHALTI_RETURN_URL");
-var khaltiWebsiteUrl = Environment.GetEnvironmentVariable("KHALTI_WEBSITE_URL");
+builder.Configuration
+    .AddJsonFile("appsettings.json", optional: false, reloadOnChange: true)
+    .AddJsonFile($"appsettings.{builder.Environment.EnvironmentName}.json", optional: true)
+    .AddEnvironmentVariables();
 
-// Apply to configuration
-if (!string.IsNullOrEmpty(khaltiSecret)) builder.Configuration["Khalti:SecretKey"] = khaltiSecret;
-if (!string.IsNullOrEmpty(khaltiPublic)) builder.Configuration["Khalti:PublicKey"] = khaltiPublic;
-if (!string.IsNullOrEmpty(googleClientId)) builder.Configuration["Authentication:Google:ClientId"] = googleClientId;
-if (!string.IsNullOrEmpty(googleClientSecret)) builder.Configuration["Authentication:Google:ClientSecret"] = googleClientSecret;
+// ========================================
+// 2. CORS Configuration (Critical for frontend at http://localhost:3000)
+// ========================================
 
-// URLs
-if (!string.IsNullOrEmpty(backendUrl)) builder.Configuration["BackendUrl"] = backendUrl;
-if (!string.IsNullOrEmpty(frontendUrl)) builder.Configuration["FrontendUrl"] = frontendUrl;
-if (!string.IsNullOrEmpty(adminAppUrl)) builder.Configuration["AdminAppUrl"] = adminAppUrl;
-if (!string.IsNullOrEmpty(googleRedirectUri)) builder.Configuration["Authentication:Google:RedirectUri"] = googleRedirectUri;
-if (!string.IsNullOrEmpty(khaltiBaseUrl)) builder.Configuration["Khalti:BaseUrl"] = khaltiBaseUrl;
-if (!string.IsNullOrEmpty(khaltiReturnUrl)) builder.Configuration["Khalti:ReturnUrl"] = khaltiReturnUrl;
-if (!string.IsNullOrEmpty(khaltiWebsiteUrl)) builder.Configuration["Khalti:WebsiteUrl"] = khaltiWebsiteUrl;
+builder.Services.AddCors(options =>
+{
+    options.AddPolicy("AllowFrontend", policy =>
+    {
+        // In development: allow localhost:3000 (React/Vite default)
+        // In production: replace with your actual deployed frontend URL
+        var allowedOrigins = new[]
+        {
+            "http://localhost:3000",
+            "https://localhost:3000",
+            // Add production frontend URL later, e.g.:
+            // builder.Configuration["FrontendUrl"]
+        };
 
-// Add services to the container.
+        policy.WithOrigins(allowedOrigins)
+              .AllowAnyMethod()
+              .AllowAnyHeader()
+              .AllowCredentials(); // Important: required when withCredentials: true in Axios
+    });
 
-// 1. Database Configuration
+    // Optional: more permissive during pure development
+    if (builder.Environment.IsDevelopment())
+    {
+        options.AddPolicy("DevAllowAll", policy =>
+            policy.SetIsOriginAllowed(_ => true)
+                  .AllowAnyMethod()
+                  .AllowAnyHeader()
+                  .AllowCredentials());
+    }
+});
+
+// ========================================
+// 3. Database & Redis
+// ========================================
+
 builder.Services.AddDbContext<CommerceDbContext>(options =>
     options.UseNpgsql(builder.Configuration.GetConnectionString("DefaultConnection")));
 
-// 1.1 Redis Configuration
-builder.Services.AddSingleton<IConnectionMultiplexer>(sp => 
-    ConnectionMultiplexer.Connect(builder.Configuration.GetConnectionString("Redis")!));
+builder.Services.AddSingleton<IConnectionMultiplexer>(sp =>
+    ConnectionMultiplexer.Connect(builder.Configuration.GetConnectionString("Redis") + ",abortConnect=false"));
 
-// 2. Identity Configuration
+// ========================================
+// 4. Identity
+// ========================================
+
 builder.Services.AddIdentity<ApplicationUser, IdentityRole>(options =>
-    {
-        options.Password.RequireDigit = true;
-        options.Password.RequireLowercase = true;
-        options.Password.RequireUppercase = true;
-        options.Password.RequireNonAlphanumeric = true;
-        options.Password.RequiredLength = 8;
-        options.User.RequireUniqueEmail = true;
-    })
-    .AddEntityFrameworkStores<CommerceDbContext>()
-    .AddDefaultTokenProviders();
+{
+    options.Password.RequireDigit = true;
+    options.Password.RequireLowercase = true;
+    options.Password.RequireUppercase = true;
+    options.Password.RequireNonAlphanumeric = true;
+    options.Password.RequiredLength = 8;
+    options.User.RequireUniqueEmail = true;
+})
+.AddEntityFrameworkStores<CommerceDbContext>()
+.AddDefaultTokenProviders();
 
-// 3. Authentication & JWT Configuration
+// ========================================
+// 5. JWT Authentication
+// ========================================
+
 var jwtSettings = builder.Configuration.GetSection("Jwt");
 builder.Services.AddAuthentication(options =>
+{
+    options.DefaultAuthenticateScheme = JwtBearerDefaults.AuthenticationScheme;
+    options.DefaultChallengeScheme = JwtBearerDefaults.AuthenticationScheme;
+})
+.AddJwtBearer(options =>
+{
+    options.TokenValidationParameters = new TokenValidationParameters
     {
-        options.DefaultAuthenticateScheme = JwtBearerDefaults.AuthenticationScheme;
-        options.DefaultChallengeScheme = JwtBearerDefaults.AuthenticationScheme;
-    })
-    .AddJwtBearer(options =>
-    {
-        options.TokenValidationParameters = new TokenValidationParameters
-        {
-            ValidateIssuer = true,
-            ValidateAudience = true,
-            ValidateLifetime = true,
-            ValidateIssuerSigningKey = true,
-            ValidIssuer = jwtSettings["Issuer"],
-            ValidAudience = jwtSettings["Audience"],
-            IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtSettings["Secret"]!)),
-            ClockSkew = TimeSpan.Zero
-        };
-    });
+        ValidateIssuer = true,
+        ValidateAudience = true,
+        ValidateLifetime = true,
+        ValidateIssuerSigningKey = true,
+        ValidIssuer = jwtSettings["Issuer"],
+        ValidAudience = jwtSettings["Audience"],
+        IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtSettings["Secret"]!)),
+        ClockSkew = TimeSpan.Zero
+    };
+});
 
-// 4. Dependency Injection
+// ========================================
+// 6. Authorization Policies
+// ========================================
+
+builder.Services.AddAuthorization(options =>
+{
+    options.AddPolicy("RequireAdminRole", policy =>
+        policy.RequireRole(UserRoles.Admin, UserRoles.SuperAdmin));
+});
+
+// ========================================
+// 7. Dependency Injection
+// ========================================
+
 builder.Services.AddScoped(typeof(IRepository<>), typeof(Repository<>));
+builder.Services.AddScoped<IUnitOfWork, UnitOfWork>();
+
 builder.Services.AddScoped<IAuthService, AuthService>();
 builder.Services.AddScoped<ICartService, CartService>();
 builder.Services.AddScoped<IInventoryService, InventoryService>();
 builder.Services.AddScoped<IOrderService, OrderService>();
 builder.Services.AddScoped<IProductService, ProductService>();
-builder.Services.AddScoped<IUnitOfWork, UnitOfWork>();
 builder.Services.AddScoped<IEmailService, EmailService>();
 builder.Services.AddScoped<ISecurityLogger, SecurityLogger>();
 builder.Services.AddScoped<IImageStorageService, CloudinaryImageStorageService>();
@@ -121,47 +156,52 @@ builder.Services.AddScoped<IReturnService, ReturnService>();
 builder.Services.AddScoped<IUserManagementService, UserManagementService>();
 builder.Services.AddScoped<IExportService, ExportService>();
 builder.Services.AddScoped<IPaymentService, PaymentService>();
+builder.Services.AddScoped<IDashboardService, DashboardService>();
 
-// 5. Cloudinary Configuration
-builder.Services.Configure<CloudinarySettings>(builder.Configuration.GetSection("Cloudinary"));
-
-// 6. Khalti Configuration & Services
-builder.Services.Configure<KhaltiSettings>(builder.Configuration.GetSection("Khalti"));
-
-// 7. Inventory Configuration
-builder.Services.Configure<InventoryConfiguration>(builder.Configuration.GetSection("Inventory"));
-
+// External services
 builder.Services.AddHttpClient<IKhaltiPaymentService, KhaltiPaymentService>();
-builder.Services.AddHostedService<PaymentReconciliationService>();
-
-// 8. Google OAuth Service
 builder.Services.AddHttpClient<IGoogleAuthService, GoogleAuthService>();
 builder.Services.AddScoped<IGoogleAuthService, GoogleAuthService>();
 
-builder.Services.AddAuthorization(options =>
-{
-    options.AddPolicy("RequireAdminRole", policy =>
-        policy.RequireRole(UserRoles.Admin, UserRoles.SuperAdmin));
-});
+// Background services
+builder.Services.AddHostedService<PaymentReconciliationService>();
 
-// 5. API Configuration
-builder.Services.AddControllers();
+// ========================================
+// 8. Configuration Sections
+// ========================================
+
+builder.Services.Configure<CloudinarySettings>(builder.Configuration.GetSection("Cloudinary"));
+builder.Services.Configure<KhaltiSettings>(builder.Configuration.GetSection("Khalti"));
+builder.Services.Configure<InventoryConfiguration>(builder.Configuration.GetSection("Inventory"));
+
+// ========================================
+// 9. API & Swagger
+// ========================================
+
+builder.Services.AddControllers()
+    .AddJsonOptions(options =>
+    {
+        options.JsonSerializerOptions.Converters.Add(new System.Text.Json.Serialization.JsonStringEnumConverter());
+        options.JsonSerializerOptions.ReferenceHandler = System.Text.Json.Serialization.ReferenceHandler.IgnoreCycles;
+    });
 builder.Services.AddHttpContextAccessor();
+
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen(c =>
 {
     c.SwaggerDoc("v1", new OpenApiInfo { Title = "Commerce API", Version = "v1" });
-    
-    // JWT Support in Swagger
+
+    // JWT Bearer Auth in Swagger
     c.AddSecurityDefinition("Bearer", new OpenApiSecurityScheme
     {
-        Description = "JWT Authorization header using the Bearer scheme.",
+        Description = "JWT Authorization header using the Bearer scheme. Example: \"Bearer {token}\"",
         Name = "Authorization",
         In = ParameterLocation.Header,
         Type = SecuritySchemeType.Http,
-        Scheme = "bearer"
+        Scheme = "bearer",
+        BearerFormat = "JWT"
     });
-    
+
     c.AddSecurityRequirement(new OpenApiSecurityRequirement
     {
         {
@@ -173,22 +213,35 @@ builder.Services.AddSwaggerGen(c =>
                     Id = "Bearer"
                 }
             },
-            new string[] {}
+            Array.Empty<string>()
         }
     });
 
+    // XML Comments (optional)
     var xmlFile = $"{System.Reflection.Assembly.GetExecutingAssembly().GetName().Name}.xml";
     var xmlPath = Path.Combine(AppContext.BaseDirectory, xmlFile);
-    c.IncludeXmlComments(xmlPath);
+    if (File.Exists(xmlPath))
+        c.IncludeXmlComments(xmlPath);
 });
 
 var app = builder.Build();
 
-// Configure the HTTP request pipeline.
+// ========================================
+// 10. Middleware Pipeline
+// ========================================
+
 if (app.Environment.IsDevelopment())
 {
     app.UseSwagger();
     app.UseSwaggerUI();
+
+    // Use permissive CORS only in development
+    app.UseCors("DevAllowAll");
+}
+else
+{
+    // In production, use strict CORS
+    app.UseCors("AllowFrontend");
 }
 
 app.UseHttpsRedirection();
@@ -198,14 +251,20 @@ app.UseAuthorization();
 
 app.MapControllers();
 
-// Seed Roles
-using (var scope = app.Services.CreateScope())
+// ========================================
+// 11. Seed Roles & Admin User (Development Only Recommended)
+// ========================================
+
+if (app.Environment.IsDevelopment())
 {
-    var roleManager = scope.ServiceProvider.GetRequiredService<RoleManager<IdentityRole>>();
-    var userManager = scope.ServiceProvider.GetRequiredService<UserManager<ApplicationUser>>();
-    
+    using var scope = app.Services.CreateScope();
+    var services = scope.ServiceProvider;
+
+    var roleManager = services.GetRequiredService<RoleManager<IdentityRole>>();
+    var userManager = services.GetRequiredService<UserManager<ApplicationUser>>();
+
     var roles = new[] { "SuperAdmin", "Admin", "Warehouse", "Support", "Customer" };
-    
+
     foreach (var role in roles)
     {
         if (!await roleManager.RoleExistsAsync(role))
@@ -214,19 +273,20 @@ using (var scope = app.Services.CreateScope())
         }
     }
 
-    // Seed Admin User
     var adminEmail = "admin@ecommerce.com";
-    if (await userManager.FindByEmailAsync(adminEmail) == null)
+    var adminUser = await userManager.FindByEmailAsync(adminEmail);
+    if (adminUser == null)
     {
-        var admin = new ApplicationUser 
-        { 
-            UserName = adminEmail, 
-            Email = adminEmail, 
+        adminUser = new ApplicationUser
+        {
+            UserName = adminEmail,
+            Email = adminEmail,
             EmailConfirmed = true,
-            MfaEnabled = false // Disabled for testing simplicity
+            MfaEnabled = false
         };
-        await userManager.CreateAsync(admin, "Admin123!");
-        await userManager.AddToRoleAsync(admin, "Admin");
+
+        await userManager.CreateAsync(adminUser, "Admin123!");
+        await userManager.AddToRoleAsync(adminUser, "Admin");
     }
 }
 

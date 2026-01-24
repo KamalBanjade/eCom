@@ -6,6 +6,7 @@ using Commerce.Domain.Entities.Products;
 using Commerce.Domain.Exceptions;
 using Commerce.Infrastructure.Data;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -154,9 +155,9 @@ public class InventoryService : IInventoryService
         using var transaction = await _context.Database.BeginTransactionAsync(cancellationToken);
         try
         {
-            // Pessimistic locking: Lock the ProductVariant row with UPDLOCK, HOLDLOCK
+            // Pessimistic locking: Lock the ProductVariant row (PostgreSQL: FOR UPDATE)
             var variant = await _context.ProductVariants
-                .FromSqlRaw(@"SELECT * FROM ""ProductVariants"" WITH (UPDLOCK, HOLDLOCK) WHERE ""Id"" = {0}", productVariantId)
+                .FromSqlRaw(@"SELECT * FROM ""ProductVariants"" WHERE ""Id"" = {0} FOR UPDATE", productVariantId)
                 .FirstOrDefaultAsync(cancellationToken);
 
             if (variant == null)
@@ -313,12 +314,18 @@ public class InventoryService : IInventoryService
         ValidateQuantity(quantity, nameof(quantity));
         ValidateUserId(userId);
 
-        using var transaction = await _context.Database.BeginTransactionAsync(cancellationToken);
+        // Check for existing transaction to allow composing this method into larger units of work
+        IDbContextTransaction? transaction = null;
+        if (_context.Database.CurrentTransaction == null)
+        {
+            transaction = await _context.Database.BeginTransactionAsync(cancellationToken);
+        }
+
         try
         {
-            // Pessimistic locking on ProductVariant
+            // Pessimistic locking on ProductVariant (PostgreSQL: FOR UPDATE)
             var variant = await _context.ProductVariants
-                .FromSqlRaw(@"SELECT * FROM ""ProductVariants"" WITH (UPDLOCK, HOLDLOCK) WHERE ""Id"" = {0}", productVariantId)
+                .FromSqlRaw(@"SELECT * FROM ""ProductVariants"" WHERE ""Id"" = {0} FOR UPDATE", productVariantId)
                 .FirstOrDefaultAsync(cancellationToken);
 
             if (variant == null)
@@ -330,45 +337,80 @@ public class InventoryService : IInventoryService
                                           !r.IsReleased &&
                                           !r.IsConfirmed, cancellationToken);
 
-            // Reservation is MANDATORY
+            // RESILIENCY FIX: If reservation is missing (expired), check if we can still fulfill it directly.
+            // This prevents "Payment Successful -> Order Failed" scenarios.
             if (reservation == null)
-                throw new ReservationNotFoundException(productVariantId, userId);
+            {
+                if (variant.StockQuantity < quantity)
+                    throw new ReservationNotFoundException(productVariantId, userId); // Or InsufficientStockException
 
-            // Validate reservation quantity matches
-            if (reservation.Quantity != quantity)
-                throw new InvalidOperationException($"Reservation quantity ({reservation.Quantity}) does not match requested quantity ({quantity})");
+                // We have stock, but no reservation. Treat as direct "late" confirmation.
+                // Deduct permanent stock
+                int stockBeforeLog = variant.StockQuantity;
+                variant.StockQuantity -= quantity;
 
-            // Validate stock BEFORE decrementing
-            if (variant.StockQuantity < quantity)
-                throw new InsufficientStockException(productVariantId, quantity, variant.StockQuantity);
+                await LogStockChangeAsync(
+                    productVariantId,
+                    "Confirm_Late",
+                    -quantity,
+                    stockBeforeLog,
+                    variant.StockQuantity,
+                    userId,
+                    null,
+                    "Stock confirmed (Reservation expired but stock available)");
+            }
+            else
+            {
+                // Validate reservation quantity matches
+                if (reservation.Quantity != quantity)
+                    throw new InvalidOperationException($"Reservation quantity ({reservation.Quantity}) does not match requested quantity ({quantity})");
 
-            int stockBefore = variant.StockQuantity;
+                // Validate stock BEFORE decrementing
+                if (variant.StockQuantity < quantity)
+                     throw new InsufficientStockException(productVariantId, quantity, variant.StockQuantity);
 
-            // Deduct permanent stock
-            variant.StockQuantity -= quantity;
+                int stockBefore = variant.StockQuantity;
 
-            // Mark reservation as confirmed
-            reservation.IsConfirmed = true;
+                // Deduct permanent stock
+                variant.StockQuantity -= quantity;
 
-            // Audit log
-            await LogStockChangeAsync(
-                productVariantId,
-                "Confirm",
-                -quantity,
-                stockBefore,
-                variant.StockQuantity,
-                userId,
-                reservation.Id,
-                "Stock confirmed and deducted");
+                // Mark reservation as confirmed
+                reservation.IsConfirmed = true;
+
+                // Audit log
+                await LogStockChangeAsync(
+                    productVariantId,
+                    "Confirm",
+                    -quantity,
+                    stockBefore,
+                    variant.StockQuantity,
+                    userId,
+                    reservation.Id,
+                    "Stock confirmed and deducted");
+            }
 
             await _variantRepository.UpdateAsync(variant, cancellationToken);
             await _context.SaveChangesAsync(cancellationToken);
-            await transaction.CommitAsync(cancellationToken);
+
+            if (transaction != null)
+            {
+                await transaction.CommitAsync(cancellationToken);
+            }
         }
         catch
         {
-            await transaction.RollbackAsync(cancellationToken);
+            if (transaction != null)
+            {
+                await transaction.RollbackAsync(cancellationToken);
+            }
             throw;
+        }
+        finally
+        {
+            if (transaction != null)
+            {
+                await transaction.DisposeAsync();
+            }
         }
     }
 
@@ -413,6 +455,51 @@ public class InventoryService : IInventoryService
             }
 
             return count;
+        }
+        catch
+        {
+            await transaction.RollbackAsync(cancellationToken);
+            throw;
+        }
+    }
+
+
+    public async Task AdjustStockAsync(Guid productVariantId, int quantityChange, string reason, string? userId, CancellationToken cancellationToken = default)
+    {
+        if (quantityChange == 0) return;
+
+        using var transaction = await _context.Database.BeginTransactionAsync(cancellationToken);
+        try
+        {
+            // [MANDATORY] Pessimistic locking to prevent race conditions during adjustment
+            var variant = await _context.ProductVariants
+                .FromSqlRaw(@"SELECT * FROM ""ProductVariants"" WHERE ""Id"" = {0} FOR UPDATE", productVariantId)
+                .FirstOrDefaultAsync(cancellationToken);
+
+            if (variant == null)
+                throw new InvalidOperationException($"Product Variant {productVariantId} not found.");
+
+            // Prevent negative physical stock
+            if (variant.StockQuantity + quantityChange < 0)
+                throw new InvalidOperationException($"Insufficient physical stock. Current: {variant.StockQuantity}, Requested Change: {quantityChange}");
+
+            int stockBefore = variant.StockQuantity;
+            variant.StockQuantity += quantityChange;
+
+            // [MANDATORY] Audit log creation within the SAME transaction
+            await LogStockChangeAsync(
+                productVariantId,
+                quantityChange > 0 ? "Adjustment_Add" : "Adjustment_Subtract",
+                quantityChange,
+                stockBefore,
+                variant.StockQuantity,
+                userId ?? "SYSTEM",
+                null,
+                reason);
+
+            _context.ProductVariants.Update(variant);
+            await _context.SaveChangesAsync(cancellationToken);
+            await transaction.CommitAsync(cancellationToken);
         }
         catch
         {

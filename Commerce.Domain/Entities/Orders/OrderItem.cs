@@ -18,6 +18,15 @@ public class OrderItem : BaseEntity
     public int Quantity { get; set; }
     public decimal UnitPrice { get; set; }
     
+    // Discount distribution fields (nullable for backward compatibility)
+    public decimal? DiscountAllocated { get; set; }
+    public decimal? DiscountPerUnit { get; set; }
+    public decimal? EffectivePrice { get; set; }
+    public decimal? DiscountDistributionPercentage { get; set; }
+    
+    // Return tracking
+    public int ReturnedQuantity { get; set; }
+    
     // Snapshot of product details at order time (stored as JSON)
     public Dictionary<string, string> ProductSnapshot { get; set; } = new();
     

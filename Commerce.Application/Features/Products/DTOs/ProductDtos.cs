@@ -28,6 +28,7 @@ public record ProductResponse(
     string? Brand, 
     bool IsActive, 
     DateTime CreatedAt,
+    List<string> ImageUrls,
     List<ProductVariantResponse> Variants);
 
 public record CreateProductVariantRequest(
@@ -51,6 +52,8 @@ public record ProductVariantResponse(
     string SKU, 
     decimal Price, 
     decimal? DiscountPrice, 
-    int StockQuantity, 
+    int StockQuantity,
+    int AvailableStock,
     Dictionary<string, string> Attributes, 
-    bool IsActive);
+    bool IsActive,
+    List<string> ImageUrls);

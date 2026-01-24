@@ -18,4 +18,5 @@ public class ApplicationUser : IdentityUser
     public string? GoogleId { get; set; } // Google user ID (sub claim)
     public string? Provider { get; set; } // "Google", "Facebook", etc.
     
+    public bool IsActive { get; set; } = true;
 }

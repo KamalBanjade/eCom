@@ -3,6 +3,7 @@ using Commerce.Application.Common.Interfaces;
 using Commerce.Application.Common.DTOs;
 using Commerce.Application.Features.Products;
 using Commerce.Application.Features.Products.DTOs;
+using Commerce.Application.Features.Inventory;
 using Commerce.Domain.Entities.Products;
 using Microsoft.EntityFrameworkCore;
 using Commerce.Infrastructure.Data; // Added for CommerceDbContext
@@ -15,6 +16,7 @@ public class ProductService : IProductService
     private readonly IRepository<ProductVariant> _variantRepository;
     private readonly IRepository<Category> _categoryRepository; // Added for Category validation
     private readonly IUnitOfWork _unitOfWork;
+    private readonly IInventoryService _inventoryService;
 
     private readonly CommerceDbContext _context;
 
@@ -23,13 +25,15 @@ public class ProductService : IProductService
         IRepository<ProductVariant> variantRepository,
         IRepository<Category> categoryRepository,
         IUnitOfWork unitOfWork,
-        CommerceDbContext context)
+        CommerceDbContext context,
+        IInventoryService inventoryService)
     {
         _productRepository = productRepository;
         _variantRepository = variantRepository;
         _categoryRepository = categoryRepository;
         _unitOfWork = unitOfWork;
         _context = context;
+        _inventoryService = inventoryService;
     }
 
     // ==================== Product CRUD ====================
@@ -42,7 +46,12 @@ public class ProductService : IProductService
             p => p.Category,
             p => p.Variants);
 
-        return products.Select(MapToProductResponse);
+        var responses = new List<ProductResponse>();
+        foreach (var product in products)
+        {
+            responses.Add(await MapToProductResponseAsync(product, cancellationToken));
+        }
+        return responses;
     }
 
     public async Task<ProductResponse?> GetProductByIdAsync(Guid id, CancellationToken cancellationToken = default)
@@ -53,7 +62,7 @@ public class ProductService : IProductService
             p => p.Category,
             p => p.Variants);
 
-        return product is null ? null : MapToProductResponse(product);
+        return product is null ? null : await MapToProductResponseAsync(product, cancellationToken);
     }
 
     public async Task<ProductResponse> CreateProductAsync(CreateProductRequest request, CancellationToken cancellationToken = default)
@@ -80,7 +89,7 @@ public class ProductService : IProductService
 
         // Fetch again to ensure Category is loaded for response mapping, or map manually
         product.Category = category; 
-        return MapToProductResponse(product);
+        return await MapToProductResponseAsync(product, cancellationToken);
     }
 
     public async Task<ProductResponse?> UpdateProductAsync(Guid id, UpdateProductRequest request, CancellationToken cancellationToken = default)
@@ -105,7 +114,7 @@ public class ProductService : IProductService
 
         await _unitOfWork.SaveChangesAsync(cancellationToken);
 
-        return MapToProductResponse(product);
+        return await MapToProductResponseAsync(product, cancellationToken);
     }
 
     public async Task<bool> DeleteProductAsync(Guid id, CancellationToken cancellationToken = default)
@@ -117,10 +126,18 @@ public class ProductService : IProductService
         // Actually, let's use the Repository's Delete if it supports it, but checking the requirement implies logical delete.
         // Given IRepository usually has Delete(entity), let's check if we should just toggle IsActive.
         
-        var product = await _productRepository.GetByIdAsync(id, cancellationToken);
+        // Include variants to soft delete them as well
+        var product = await _productRepository.GetByIdAsync(id, cancellationToken, p => p.Variants);
         if (product == null) return false;
 
         product.IsActive = false; // Soft delete by deactivating
+        
+        // Cascade soft delete to variants
+        foreach (var variant in product.Variants)
+        {
+            variant.IsActive = false;
+        }
+
         await _unitOfWork.SaveChangesAsync(cancellationToken);
         return true;
     }
@@ -140,21 +157,35 @@ public class ProductService : IProductService
             SKU = request.SKU,
             Price = request.Price,
             DiscountPrice = request.DiscountPrice,
-            StockQuantity = request.StockQuantity,
+            StockQuantity = 0, // Start at 0, then adjust
             Attributes = request.Attributes ?? new Dictionary<string, string>(),
             IsActive = true
         };
 
+        // Ensure SKU is unique (smart generation)
+        variant.SKU = await GenerateUniqueSkuAsync(request.SKU, new List<string>(), cancellationToken);
+
         await _variantRepository.AddAsync(variant, cancellationToken);
         await _unitOfWork.SaveChangesAsync(cancellationToken);
 
-        return MapToVariantResponse(variant);
+        // 🔥 LOG INITIAL STOCK AS ADJUSTMENT
+        if (request.StockQuantity > 0)
+        {
+            await _inventoryService.AdjustStockAsync(
+                variant.Id,
+                request.StockQuantity,
+                "Initial stock on creation",
+                null,
+                cancellationToken);
+        }
+
+        return await MapToVariantResponseAsync(variant, cancellationToken);
     }
 
     public async Task<ProductVariantResponse?> GetVariantByIdAsync(Guid id, CancellationToken cancellationToken = default)
     {
         var variant = await _variantRepository.GetByIdAsync(id, cancellationToken);
-        return variant is null ? null : MapToVariantResponse(variant);
+        return variant is null ? null : await MapToVariantResponseAsync(variant, cancellationToken);
     }
 
     public async Task<ProductVariantResponse?> UpdateVariantAsync(Guid id, UpdateProductVariantRequest request, CancellationToken cancellationToken = default)
@@ -162,15 +193,32 @@ public class ProductService : IProductService
         var variant = await _variantRepository.GetByIdAsync(id, cancellationToken);
         if (variant == null) return null;
 
+        // Calculate stock delta if changed
+        int stockDelta = request.StockQuantity - variant.StockQuantity;
+        
         variant.SKU = request.SKU;
         variant.Price = request.Price;
         variant.DiscountPrice = request.DiscountPrice;
-        variant.StockQuantity = request.StockQuantity;
+        // variant.StockQuantity is updated via AdjustStockAsync below to ensure locking/logging
+        
         variant.Attributes = request.Attributes ?? new Dictionary<string, string>();
         variant.IsActive = request.IsActive;
 
-        await _unitOfWork.SaveChangesAsync(cancellationToken);
-        return MapToVariantResponse(variant);
+        if (stockDelta != 0)
+        {
+            await _inventoryService.AdjustStockAsync(
+                variant.Id,
+                stockDelta,
+                "Manual Edit via Variant Update",
+                null,
+                cancellationToken);
+        }
+        else
+        {
+            await _unitOfWork.SaveChangesAsync(cancellationToken);
+        }
+
+        return await MapToVariantResponseAsync(variant, cancellationToken);
     }
 
     public async Task<bool> DeleteVariantAsync(Guid id, CancellationToken cancellationToken = default)
@@ -186,7 +234,12 @@ public class ProductService : IProductService
     public async Task<IEnumerable<ProductVariantResponse>> GetVariantsByProductIdAsync(Guid productId, CancellationToken cancellationToken = default)
     {
         var variants = await _variantRepository.GetAsync(v => v.ProductId == productId);
-        return variants.Select(MapToVariantResponse);
+        var responses = new List<ProductVariantResponse>();
+        foreach (var variant in variants)
+        {
+            responses.Add(await MapToVariantResponseAsync(variant, cancellationToken));
+        }
+        return responses;
     }
 
     // ==================== Category ====================
@@ -242,17 +295,21 @@ public class ProductService : IProductService
         var variant = await _variantRepository.GetByIdAsync(variantId, cancellationToken);
         if (variant == null) return false;
 
-        variant.ImageUrl = imageUrl;
+        // Add to ImageUrls array if not already present
+        if (!variant.ImageUrls.Contains(imageUrl))
+            variant.ImageUrls.Add(imageUrl);
+            
         await _unitOfWork.SaveChangesAsync(cancellationToken);
         return true;
     }
 
-    public async Task<bool> RemoveVariantImageAsync(Guid variantId, CancellationToken cancellationToken = default)
+    public async Task<bool> RemoveVariantImageAsync(Guid variantId, string imageUrl, CancellationToken cancellationToken = default)
     {
         var variant = await _variantRepository.GetByIdAsync(variantId, cancellationToken);
         if (variant == null) return false;
 
-        variant.ImageUrl = null;
+        // Remove specific image from array
+        variant.ImageUrls.Remove(imageUrl);
         await _unitOfWork.SaveChangesAsync(cancellationToken);
         return true;
     }
@@ -297,16 +354,20 @@ public class ProductService : IProductService
             .Take(filter.PageSize)
             .ToListAsync(cancellationToken);
 
-        var responses = products.Select(MapToProductResponse).ToList();
+        var responses = new List<ProductResponse>();
+        foreach (var product in products)
+        {
+            responses.Add(await MapToProductResponseAsync(product, cancellationToken));
+        }
         
         return new PagedResult<ProductResponse>(responses, totalCount, filter.Page, filter.PageSize);
     }
 
-    public async Task<ApiResponse<bool>> AdjustStockAsync(Guid productId, int quantityChange, string reason, CancellationToken cancellationToken = default)
+    public async Task<ApiResponse<bool>> AdjustStockAsync(Guid productId, int quantityChange, string reason, Guid? variantId = null, CancellationToken cancellationToken = default)
     {
         // Logic: Since stock is on Variants, we need to know WHICH variant.
         // If the interface says productId, we assume the product has a Single variant (common for simple products).
-        // If multiple variants exist, we return error instructing to use Variant ID (which needs a new endpoint or explicit variant ID passing).
+        // If multiple variants exist, we need variantId.
         
         var product = await _productRepository.GetByIdAsync(productId, cancellationToken, p => p.Variants);
         if (product == null) return ApiResponse<bool>.ErrorResponse("Product not found");
@@ -314,22 +375,39 @@ public class ProductService : IProductService
         if (product.Variants.Count == 0)
              return ApiResponse<bool>.ErrorResponse("Product has no variants to adjust stock for");
 
-        if (product.Variants.Count > 1)
-             return ApiResponse<bool>.ErrorResponse("Product has multiple variants. Please adjust stock for specific variant.");
+        ProductVariant variant;
 
-        var variant = product.Variants.First();
+        if (variantId.HasValue)
+        {
+             variant = product.Variants.FirstOrDefault(v => v.Id == variantId.Value);
+             if (variant == null)
+                 return ApiResponse<bool>.ErrorResponse($"Variant with ID {variantId} not found in this product.");
+        }
+        else
+        {
+            if (product.Variants.Count > 1)
+                 return ApiResponse<bool>.ErrorResponse("Product has multiple variants. Please adjust stock for specific variant.");
+            
+            variant = product.Variants.First();
+        }
         
-        // Prevent negative stock?
-        if (variant.StockQuantity + quantityChange < 0)
-             return ApiResponse<bool>.ErrorResponse($"Insufficient stock. Current: {variant.StockQuantity}, Change: {quantityChange}");
-
-        variant.StockQuantity += quantityChange;
-        // Ideally log 'reason' to an Audit Log (StockAuditLog was in discussion but not strictly in this scope's context dependency, 
-        // though I should use it if I could. For now keeping it simple as per immediate instructions).
-        
-        await _unitOfWork.SaveChangesAsync(cancellationToken);
-        
-        return ApiResponse<bool>.SuccessResponse(true, "Stock adjusted successfully");
+        // 🔥 PROFESSIONALLY ROUTE THROUGH INVENTORY SERVICE
+        // This handles locking, validation, and audit logging atomically.
+        try
+        {
+            await _inventoryService.AdjustStockAsync(
+                variant.Id, 
+                quantityChange, 
+                reason, 
+                null, // Could be enhanced to pass the current Admin User ID
+                cancellationToken);
+            
+            return ApiResponse<bool>.SuccessResponse(true, "Stock adjusted successfully and logged.");
+        }
+        catch (InvalidOperationException ex)
+        {
+            return ApiResponse<bool>.ErrorResponse(ex.Message);
+        }
     }
 
     public async Task<IEnumerable<ProductResponse>> GetLowStockProductsAsync(int threshold = 10, CancellationToken cancellationToken = default)
@@ -341,7 +419,12 @@ public class ProductService : IProductService
             .Where(p => p.Variants.Any(v => v.StockQuantity <= threshold))
             .ToListAsync(cancellationToken);
 
-        return products.Select(MapToProductResponse);
+        var responses = new List<ProductResponse>();
+        foreach (var product in products)
+        {
+            responses.Add(await MapToProductResponseAsync(product, cancellationToken));
+        }
+        return responses;
     }
 
     public async Task<ApiResponse<List<ProductVariantResponse>>> CreateProductVariantsBulkAsync(Guid productId, List<CreateProductVariantRequest> variants, CancellationToken cancellationToken = default)
@@ -352,13 +435,22 @@ public class ProductService : IProductService
 
         var createdVariants = new List<ProductVariant>();
 
+        // Check for duplicate SKUs in the request itself
+        // We will handle duplicates during generation by checking against the list of SKUs being created
+        
+        // Remove bulk DB check as we handle per-item uniqueness
+        var reservedSkus = new HashSet<string>();
+
         foreach (var request in variants)
         {
+            var uniqueSku = await GenerateUniqueSkuAsync(request.SKU, reservedSkus, cancellationToken);
+            reservedSkus.Add(uniqueSku);
+
             var variant = new ProductVariant
             {
                 Id = Guid.NewGuid(),
                 ProductId = productId,
-                SKU = request.SKU,
+                SKU = uniqueSku,
                 Price = request.Price,
                 DiscountPrice = request.DiscountPrice,
                 StockQuantity = request.StockQuantity,
@@ -369,17 +461,41 @@ public class ProductService : IProductService
             await _variantRepository.AddAsync(variant, cancellationToken);
         }
 
-        await _unitOfWork.SaveChangesAsync(cancellationToken);
+        try
+        {
+            await _unitOfWork.SaveChangesAsync(cancellationToken);
+        }
+        catch (DbUpdateException ex)
+        {
+             // Fallback for race conditions
+             if (ex.InnerException?.Message.Contains("duplicate key") == true || ex.Message.Contains("duplicate key"))
+                return ApiResponse<List<ProductVariantResponse>>.ErrorResponse("A variant with one of these SKUs already exists.");
+             throw;
+        }
 
+        var variantResponses = new List<ProductVariantResponse>();
+        foreach (var variant in createdVariants)
+        {
+            variantResponses.Add(await MapToVariantResponseAsync(variant, cancellationToken));
+        }
         return ApiResponse<List<ProductVariantResponse>>.SuccessResponse(
-            createdVariants.Select(MapToVariantResponse).ToList(), 
+            variantResponses, 
             $"{createdVariants.Count} variants created successfully");
     }
 
     // ==================== Mappers ====================
 
-    private static ProductResponse MapToProductResponse(Product product)
+    private async Task<ProductResponse> MapToProductResponseAsync(Product product, CancellationToken cancellationToken = default)
     {
+        var variantResponses = new List<ProductVariantResponse>();
+        if (product.Variants != null)
+        {
+            foreach (var variant in product.Variants)
+            {
+                variantResponses.Add(await MapToVariantResponseAsync(variant, cancellationToken));
+            }
+        }
+
         return new ProductResponse(
             product.Id,
             product.Name,
@@ -390,12 +506,15 @@ public class ProductService : IProductService
             product.Brand,
             product.IsActive,
             product.CreatedAt,
-            product.Variants?.Select(MapToVariantResponse).ToList() ?? new List<ProductVariantResponse>()
+            product.ImageUrls ?? new List<string>(),
+            variantResponses
         );
     }
 
-    private static ProductVariantResponse MapToVariantResponse(ProductVariant variant)
+    private async Task<ProductVariantResponse> MapToVariantResponseAsync(ProductVariant variant, CancellationToken cancellationToken = default)
     {
+        int availableStock = await _inventoryService.GetAvailableStockAsync(variant.Id, cancellationToken);
+        
         return new ProductVariantResponse(
             variant.Id,
             variant.ProductId,
@@ -403,8 +522,216 @@ public class ProductService : IProductService
             variant.Price,
             variant.DiscountPrice,
             variant.StockQuantity,
+            availableStock,
             variant.Attributes ?? new Dictionary<string, string>(),
-            variant.IsActive
+            variant.IsActive,
+            variant.ImageUrls
         );
     }
-}
+    
+
+    private async Task<string> GenerateUniqueSkuAsync(string baseSku, IEnumerable<string> reservedSkus, CancellationToken cancellationToken)
+    {
+        // Helper to check availability
+        async Task<bool> IsSkuTaken(string sku)
+        {
+            if (reservedSkus.Contains(sku)) return true;
+            var exists = await _variantRepository.GetAsync(v => v.SKU == sku, cancellationToken);
+            return exists.Any();
+        }
+
+        // 1. Check exact match
+        if (!await IsSkuTaken(baseSku)) return baseSku;
+
+        // 2. Parse to find prefix
+        string prefix = baseSku;
+        int counter = 1;
+
+        // Check if it already has a numeric suffix like "-01"
+        var match = System.Text.RegularExpressions.Regex.Match(baseSku, @"^(.*)-(\d+)$");
+        if (match.Success)
+        {
+            prefix = match.Groups[1].Value;
+            if (int.TryParse(match.Groups[2].Value, out int existingCounter))
+            {
+                counter = existingCounter + 1;
+            }
+        }
+
+        // 3. Loop until unique
+        while (true)
+        {
+            var candidateSku = $"{prefix}-{counter:D2}";
+            if (!await IsSkuTaken(candidateSku)) return candidateSku;
+            counter++;
+        }
+    }
+    
+    // ==========================================
+    // Multi-Image Variant Management
+    // ==========================================
+    
+    public async Task<ApiResponse<List<ProductVariantResponse>>> AddVariantImagesAsync(
+        Guid variantId, 
+        List<string> imageUrls, 
+        CancellationToken cancellationToken = default)
+    {
+        if (imageUrls == null || imageUrls.Count == 0)
+            return ApiResponse<List<ProductVariantResponse>>.ErrorResponse("No image URLs provided");
+            
+        var variant = await _variantRepository.GetByIdAsync(variantId, cancellationToken);
+        if (variant == null)
+            return ApiResponse<List<ProductVariantResponse>>.ErrorResponse("Variant not found");
+        
+        // Add new images to existing list (max 10 total)
+        foreach (var url in imageUrls)
+        {
+            if (variant.ImageUrls.Count >= 10)
+            {
+                return ApiResponse<List<ProductVariantResponse>>.ErrorResponse("Maximum 10 images per variant");
+            }
+            
+            if (!variant.ImageUrls.Contains(url))
+            {
+                variant.ImageUrls.Add(url);
+            }
+        }
+        
+        await _unitOfWork.SaveChangesAsync(cancellationToken);
+        
+        return ApiResponse<List<ProductVariantResponse>>.SuccessResponse(
+            new List<ProductVariantResponse> { await MapToVariantResponseAsync(variant, cancellationToken) },
+            $"Added {imageUrls.Count} image(s) to variant"
+        );
+    }
+    
+    public async Task<ApiResponse<int>> BulkUploadImagesByColorAsync(
+        Guid productId,
+        string colorValue,
+        List<string> imageUrls,
+        string colorAttributeKey = "Color",
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(colorValue))
+            return ApiResponse<int>.ErrorResponse("Color value is required");
+            
+        if (imageUrls == null || imageUrls.Count == 0)
+            return ApiResponse<int>.ErrorResponse("No image URLs provided");
+        
+        if (imageUrls.Count > 10)
+            return ApiResponse<int>.ErrorResponse("Maximum 10 images per color");
+        
+        // Find all variants of this product with matching color
+        var allVariants = await _variantRepository.GetAsync(
+            v => v.ProductId == productId,
+            cancellationToken
+        );
+        
+        var matchingVariants = allVariants.Where(v =>
+        {
+            if (v.Attributes == null) return false;
+            
+            // Case-insensitive search for color attribute key
+            var colorEntry = v.Attributes.FirstOrDefault(a =>
+                a.Key.Equals(colorAttributeKey, StringComparison.OrdinalIgnoreCase)
+            );
+            
+            return colorEntry.Value != null && 
+                   colorEntry.Value.Equals(colorValue, StringComparison.OrdinalIgnoreCase);
+        }).ToList();
+        
+        if (!matchingVariants.Any())
+            return ApiResponse<int>.ErrorResponse($"No variants found with {colorAttributeKey}='{colorValue}'");
+        
+        // Apply same images to all matching variants
+        foreach (var variant in matchingVariants)
+        {
+            // Append new images (up to 10 total)
+            foreach (var url in imageUrls)
+            {
+                if (variant.ImageUrls.Count >= 10) break;
+                
+                if (!variant.ImageUrls.Contains(url))
+                {
+                    variant.ImageUrls.Add(url);
+                }
+            }
+        }
+        
+        await _unitOfWork.SaveChangesAsync(cancellationToken);
+        
+        return ApiResponse<int>.SuccessResponse(
+            matchingVariants.Count,
+            $"Applied {imageUrls.Count} image(s) to {matchingVariants.Count} {colorValue} variant(s)"
+        );
+    }
+    
+    public async Task<ApiResponse<ProductVariantResponse>> ReorderVariantImagesAsync(
+        Guid variantId,
+        List<string> orderedImageUrls,
+        CancellationToken cancellationToken = default)
+    {
+        if (orderedImageUrls == null || orderedImageUrls.Count == 0)
+            return ApiResponse<ProductVariantResponse>.ErrorResponse("No image URLs provided");
+            
+        var variant = await _variantRepository.GetByIdAsync(variantId, cancellationToken);
+        if (variant == null)
+            return ApiResponse<ProductVariantResponse>.ErrorResponse("Variant not found");
+        
+        // Validate that all provided URLs exist in current images
+        var currentUrls = variant.ImageUrls.ToHashSet();
+        var providedUrls = orderedImageUrls.ToHashSet();
+        
+        if (!providedUrls.IsSubsetOf(currentUrls))
+            return ApiResponse<ProductVariantResponse>.ErrorResponse("Some URLs do not belong to this variant");
+        
+        // Update with new order
+        variant.ImageUrls = orderedImageUrls;
+        await _unitOfWork.SaveChangesAsync(cancellationToken);
+        
+        return ApiResponse<ProductVariantResponse>.SuccessResponse(
+            await MapToVariantResponseAsync(variant, cancellationToken),
+            "Image order updated successfully"
+        );
+    }
+
+    public async Task<IEnumerable<StockAuditLogDto>> GetStockAuditLogsAsync(Guid productId, CancellationToken cancellationToken = default)
+    {
+        // Get all variant IDs for this product
+        var variantIds = await _context.ProductVariants
+            .Where(v => v.ProductId == productId)
+            .Select(v => v.Id)
+            .ToListAsync(cancellationToken);
+
+        if (!variantIds.Any())
+            return Enumerable.Empty<StockAuditLogDto>();
+
+        // Get all stock audit logs for these variants
+        var logs = await _context.Set<Commerce.Domain.Entities.Inventory.StockAuditLog>()
+            .Where(log => variantIds.Contains(log.ProductVariantId))
+            .OrderByDescending(log => log.Timestamp)
+            .Take(100) // Limit to last 100 entries
+            .ToListAsync(cancellationToken);
+
+        // Get variant names for mapping
+        var variants = await _context.ProductVariants
+            .Where(v => variantIds.Contains(v.Id))
+            .ToDictionaryAsync(v => v.Id, v => v.SKU, cancellationToken);
+
+        return logs.Select(log => new StockAuditLogDto
+        {
+            Id = log.Id,
+            ProductVariantId = log.ProductVariantId,
+            VariantName = variants.GetValueOrDefault(log.ProductVariantId, "Unknown"),
+            Action = log.Action,
+            QuantityChanged = log.QuantityChanged,
+            StockBefore = log.StockBefore,
+            StockAfter = log.StockAfter,
+            UserId = log.UserId,
+            ReservationId = log.ReservationId,
+            Reason = log.Reason,
+            Timestamp = log.Timestamp
+        });
+    }
+    }
+    

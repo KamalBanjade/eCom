@@ -19,9 +19,11 @@ public class ProductVariant : BaseEntity
     public Dictionary<string, string> Attributes { get; set; } = new Dictionary<string, string>(); // e.g., { "Color": "Red", "Size": "Large" }
     
     /// <summary>
-    /// Optional variant-specific imag  e URL (overrides product images)
+    /// List of variant-specific image URLs (multiple images per variant)
+    /// First image in array is the primary image
     /// </summary>
-    public string? ImageUrl { get; set; }
+    [Column(TypeName = "jsonb")]
+    public List<string> ImageUrls { get; set; } = new();
     
     public int StockQuantity { get; set; }
     

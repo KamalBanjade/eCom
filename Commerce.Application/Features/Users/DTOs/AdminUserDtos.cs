@@ -13,6 +13,7 @@ public class AdminUserDto
     public List<string> Roles { get; set; } = new();
     public DateTime CreatedAt { get; set; }
     public bool IsActive { get; set; }
+    public string Status { get; set; } = "Active";
 }
 
 /// <summary>
@@ -32,6 +33,14 @@ public class CreateAdminUserRequest
 public class UpdateUserRoleRequest
 {
     public string NewRole { get; set; } = string.Empty;
+}
+
+/// <summary>
+/// Request to update a user's active status
+/// </summary>
+public class UpdateUserStatusRequest
+{
+    public bool IsActive { get; set; }
 }
 
 /// <summary>

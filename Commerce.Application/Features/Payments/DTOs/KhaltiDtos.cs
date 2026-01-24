@@ -76,3 +76,27 @@ public class KhaltiLookupResponse
     [JsonPropertyName("refunded")]
     public bool Refunded { get; set; }
 }
+
+public class KhaltiRefundResponse
+{
+    [JsonPropertyName("detail")]
+    public string Detail { get; set; } = string.Empty;
+    
+    [JsonPropertyName("status")]
+    public string? Status { get; set; }
+    
+    [JsonPropertyName("message")]
+    public string? Message { get; set; }
+    
+    [JsonPropertyName("transaction_id")]
+    public string? TransactionId { get; set; }
+}
+
+public class KhaltiRefundRequest
+{
+    [JsonPropertyName("amount")]
+    public long? Amount { get; set; }
+    
+    [JsonPropertyName("mobile")]
+    public string? Mobile { get; set; }
+}

@@ -41,7 +41,7 @@ public class AdminProductsController : ControllerBase
         [FromBody] AdjustStockRequest request,
         CancellationToken cancellationToken)
     {
-        var result = await _productService.AdjustStockAsync(id, request.QuantityChange, request.Reason, cancellationToken);
+        var result = await _productService.AdjustStockAsync(id, request.QuantityChange, request.Reason, request.VariantId, cancellationToken);
         
         if (!result.Success)
             return BadRequest(result);
@@ -77,5 +77,17 @@ public class AdminProductsController : ControllerBase
             return BadRequest(result);
 
         return StatusCode(201, result);
+    }
+
+    /// <summary>
+    /// Admin/Warehouse: Get stock audit logs for a product
+    /// </summary>
+    [HttpGet("{id}/inventory-history")]
+    public async Task<ActionResult<ApiResponse<IEnumerable<StockAuditLogDto>>>> GetInventoryHistory(
+        Guid id,
+        CancellationToken cancellationToken)
+    {
+        var result = await _productService.GetStockAuditLogsAsync(id, cancellationToken);
+        return Ok(ApiResponse<IEnumerable<StockAuditLogDto>>.SuccessResponse(result));
     }
 }

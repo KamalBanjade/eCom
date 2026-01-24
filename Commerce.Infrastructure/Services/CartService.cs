@@ -1,6 +1,7 @@
 using Commerce.Application.Common.DTOs;
 using Commerce.Application.Common.Interfaces;
 using Commerce.Application.Features.Carts;
+using Commerce.Application.Features.Inventory;
 using Commerce.Domain.Entities.Carts;
 using Commerce.Domain.Entities.Products;
 using Commerce.Infrastructure.Data;
@@ -20,9 +21,11 @@ public class CartService : ICartService
     private readonly IConnectionMultiplexer _redis;
     private readonly UserManager<ApplicationUser> _userManager;
     private readonly CommerceDbContext _context;
-    private readonly ICouponService _couponService; // ← NEW
+    private readonly ICouponService _couponService;
+    private readonly IInventoryService _inventoryService;
     private readonly IDatabase _db;
     private const int CartTtlSeconds = 86400 * 30; // 30 days
+    private static readonly TimeSpan ReservationDuration = TimeSpan.FromMinutes(15);
 
     private readonly JsonSerializerOptions _jsonOptions = new()
     {
@@ -41,12 +44,14 @@ public class CartService : ICartService
         IConnectionMultiplexer redis,
         UserManager<ApplicationUser> userManager,
         CommerceDbContext context,
-        ICouponService couponService) // ← INJECT
+        ICouponService couponService,
+        IInventoryService inventoryService)
     {
         _redis = redis;
         _userManager = userManager;
         _context = context;
         _couponService = couponService;
+        _inventoryService = inventoryService;
         _db = _redis.GetDatabase();
     }
 
@@ -105,7 +110,7 @@ public class CartService : ICartService
                     VariantName = variant?.Attributes != null && variant.Attributes.Any()
                         ? string.Join(" - ", variant.Attributes.Values.Where(v => !string.IsNullOrEmpty(v)))
                         : variant?.SKU ?? string.Empty,
-                    ImageUrl = variant?.ImageUrl ?? string.Empty,
+                    ImageUrl = variant?.ImageUrls?.FirstOrDefault() ?? string.Empty,
                     UnitPrice = price,
                     Quantity = item.Quantity,
                 });
@@ -230,11 +235,35 @@ public class CartService : ICartService
             if (variant == null)
                 return ApiResponse<CartResponse>.ErrorResponse("Product variant not found");
 
-            // Update cart items
+            // Determine reservation ID (customer or anonymous)
+            string reservationId = customerId?.ToString() ?? anonymousId!;
+
+            // Calculate new total quantity
             var existingItem = cart.Items.FirstOrDefault(i => i.ProductVariantId == productVariantId);
+            int newTotalQuantity = (existingItem?.Quantity ?? 0) + quantity;
+
+            // Check stock availability and reserve
+            try
+            {
+                bool reserved = await _inventoryService.ReserveStockAsync(
+                    productVariantId, 
+                    newTotalQuantity, 
+                    reservationId, 
+                    ReservationDuration, 
+                    cancellationToken);
+
+                if (!reserved)
+                    return ApiResponse<CartResponse>.ErrorResponse("Insufficient stock available");
+            }
+            catch (Exception ex)
+            {
+                return ApiResponse<CartResponse>.ErrorResponse($"Stock reservation failed: {ex.Message}");
+            }
+
+            // Update cart items
             if (existingItem != null)
             {
-                existingItem.Quantity += quantity;
+                existingItem.Quantity = newTotalQuantity;
                 existingItem.PriceAtAdd = variant.Price; // Update to latest price
             }
             else
@@ -294,6 +323,18 @@ public class CartService : ICartService
             if (item == null)
                 return ApiResponse<CartResponse>.ErrorResponse("Item not found in cart");
 
+            // Release stock reservation
+            string reservationId = customerId?.ToString() ?? anonymousId!;
+            try
+            {
+                await _inventoryService.ReleaseReservationAsync(item.ProductVariantId, reservationId, cancellationToken);
+            }
+            catch (Exception ex)
+            {
+                // Log but don't fail the removal
+                _context.Database.ExecuteSqlRaw($"-- Failed to release reservation: {ex.Message}");
+            }
+
             cart.Items.Remove(item);
 
             await _db.StringSetAsync(key, JsonSerializer.Serialize(cart, _jsonOptions), TimeSpan.FromSeconds(CartTtlSeconds));
@@ -320,6 +361,40 @@ public class CartService : ICartService
 
         try
         {
+            // Fetch cart items before clearing to release reservations
+            var data = await _db.StringGetAsync(key);
+            if (!data.IsNullOrEmpty)
+            {
+                try
+                {
+                    var cart = JsonSerializer.Deserialize<Cart>(data!, _jsonOptions);
+                    if (cart?.Items?.Any() == true)
+                    {
+                        string reservationId = customerId?.ToString() ?? anonymousId!;
+                        
+                        // Release all reservations
+                        foreach (var item in cart.Items)
+                        {
+                            try
+                            {
+                                await _inventoryService.ReleaseReservationAsync(
+                                    item.ProductVariantId, 
+                                    reservationId, 
+                                    cancellationToken);
+                            }
+                            catch
+                            {
+                                // Continue releasing others even if one fails
+                            }
+                        }
+                    }
+                }
+                catch (JsonException)
+                {
+                    // Cart data corrupted, just delete it
+                }
+            }
+
             await _db.KeyDeleteAsync(key);
             return ApiResponse<bool>.SuccessResponse(true, "Cart cleared successfully");
         }

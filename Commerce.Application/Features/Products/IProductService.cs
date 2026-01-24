@@ -27,11 +27,17 @@ public interface IProductService
     Task<bool> AddProductImagesAsync(Guid productId, IEnumerable<string> imageUrls, CancellationToken cancellationToken = default);
     Task<bool> RemoveProductImageAsync(Guid productId, string imageUrl, CancellationToken cancellationToken = default);
     Task<bool> UpdateVariantImageAsync(Guid variantId, string imageUrl, CancellationToken cancellationToken = default);
-    Task<bool> RemoveVariantImageAsync(Guid variantId, CancellationToken cancellationToken = default);
+    Task<bool> RemoveVariantImageAsync(Guid variantId, string imageUrl, CancellationToken cancellationToken = default);
+    
+    // Multi-image variant management
+    Task<ApiResponse<List<ProductVariantResponse>>> AddVariantImagesAsync(Guid variantId, List<string> imageUrls, CancellationToken cancellationToken = default);
+    Task<ApiResponse<int>> BulkUploadImagesByColorAsync(Guid productId, string colorValue, List<string> imageUrls, string colorAttributeKey = "Color", CancellationToken cancellationToken = default);
+    Task<ApiResponse<ProductVariantResponse>> ReorderVariantImagesAsync(Guid variantId, List<string> orderedImageUrls, CancellationToken cancellationToken = default);
     
     // Admin-specific methods
     Task<PagedResult<ProductResponse>> GetProductsWithFiltersAsync(ProductFilterRequest filter, CancellationToken cancellationToken = default);
-    Task<ApiResponse<bool>> AdjustStockAsync(Guid productId, int quantityChange, string reason, CancellationToken cancellationToken = default);
+    Task<ApiResponse<bool>> AdjustStockAsync(Guid productId, int quantityChange, string reason, Guid? variantId = null, CancellationToken cancellationToken = default);
     Task<IEnumerable<ProductResponse>> GetLowStockProductsAsync(int threshold = 10, CancellationToken cancellationToken = default);
     Task<ApiResponse<List<ProductVariantResponse>>> CreateProductVariantsBulkAsync(Guid productId, List<CreateProductVariantRequest> variants, CancellationToken cancellationToken = default);
+    Task<IEnumerable<StockAuditLogDto>> GetStockAuditLogsAsync(Guid productId, CancellationToken cancellationToken = default);
 }

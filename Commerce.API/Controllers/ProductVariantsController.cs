@@ -140,10 +140,96 @@ public class ProductVariantsController : ControllerBase
         if (!deleted)
             return NotFound(ApiResponse<bool>.ErrorResponse("Image not found in storage or already deleted"));
 
-        var dbResult = await _productService.RemoveVariantImageAsync(id, cancellationToken);
+        var dbResult = await _productService.RemoveVariantImageAsync(id, imageUrl, cancellationToken);
         if (!dbResult)
             return BadRequest(ApiResponse<bool>.ErrorResponse("Image removed from storage but failed to update variant database"));
 
         return Ok(ApiResponse<bool>.SuccessResponse(true, "Variant image deleted successfully from storage and database"));
+    }
+    
+    // ==========================================
+    // Multi-Image Endpoints
+    // ==========================================
+    
+    [HttpPost("{id}/images")]
+    [Authorize(Roles = "Admin,SuperAdmin")]
+    public async Task<ActionResult<ApiResponse<List<ProductVariantResponse>>>> UploadVariantImages(
+        Guid id,
+        [FromForm] List<IFormFile> images,
+        CancellationToken cancellationToken)
+    {
+        if (images == null || images.Count == 0)
+            return BadRequest(ApiResponse<List<ProductVariantResponse>>.ErrorResponse("No images provided"));
+            
+        if (images.Count > 10)
+            return BadRequest(ApiResponse<List<ProductVariantResponse>>.ErrorResponse("Maximum 10 images allowed"));
+        
+        // Upload all images to Cloudinary
+        var uploadedUrls = new List<string>();
+        foreach (var image in images)
+        {
+            await using var stream = image.OpenReadStream();
+            var url = await _imageStorageService.UploadImageAsync(
+                stream, 
+                image.FileName, 
+                $"variants/{id}", 
+                cancellationToken);
+            uploadedUrls.Add(url);
+        }
+        
+        // Add to variant
+        var result = await _productService.AddVariantImagesAsync(id, uploadedUrls, cancellationToken);
+        return result.Success ? Ok(result) : BadRequest(result);
+    }
+    
+    [HttpPost("bulk-images-by-color")]
+    [Authorize(Roles = "Admin,SuperAdmin")]
+    public async Task<ActionResult<ApiResponse<int>>> BulkUploadImagesByColor(
+        [FromQuery] Guid productId,
+        [FromQuery] string color,
+        [FromQuery] string? colorAttributeKey,
+        [FromForm] List<IFormFile> images,
+        CancellationToken cancellationToken)
+    {
+        if (images == null || images.Count == 0)
+            return BadRequest(ApiResponse<int>.ErrorResponse("No images provided"));
+            
+        if (images.Count > 10)
+            return BadRequest(ApiResponse<int>.ErrorResponse("Maximum 10 images allowed"));
+        
+        // Upload all images to Cloudinary
+        var uploadedUrls = new List<string>();
+        foreach (var image in images)
+        {
+            await using var stream = image.OpenReadStream();
+            var url = await _imageStorageService.UploadImageAsync(
+                stream, 
+                image.FileName, 
+                $"products/{productId}/variants", 
+                cancellationToken);
+            uploadedUrls.Add(url);
+        }
+        
+        // Apply to all variants of this color
+        var result = await _productService.BulkUploadImagesByColorAsync(
+            productId: productId,
+            colorValue: color,
+            imageUrls: uploadedUrls,
+            colorAttributeKey: colorAttributeKey ?? "Color",
+            cancellationToken: cancellationToken
+        );
+        
+        return result.Success ? Ok(result) : BadRequest(result);
+    }
+    
+    [HttpPut("{id}/images/reorder")]
+    [Authorize(Roles = "Admin,SuperAdmin")]
+    public async Task<ActionResult<ApiResponse<ProductVariantResponse>>> ReorderImages(
+        Guid id,
+        [FromBody] List<string> orderedUrls,
+        CancellationToken cancellationToken)
+    {
+        var result = await _productService.ReorderVariantImagesAsync(id, orderedUrls, cancellationToken);
+        return result.Success ? Ok(result) : BadRequest(result);
     }
 }

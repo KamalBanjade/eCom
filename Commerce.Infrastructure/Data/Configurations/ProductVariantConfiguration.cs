@@ -28,25 +28,32 @@ public class ProductVariantConfiguration : IEntityTypeConfiguration<ProductVaria
                .IsRequired();
 
         builder.Property(v => v.IsActive)
-               .HasDefaultValue(true)
                .IsRequired();
 
-        builder.Property(v => v.ImageUrl)
-               .HasColumnType("text");
+        builder.Property(v => v.ImageUrls)
+               .HasColumnType("jsonb")
+               .HasConversion(
+                   v => JsonSerializer.Serialize(v, JsonSerializerOptions.Default),
+                   v => JsonSerializer.Deserialize<List<string>>(v, JsonSerializerOptions.Default) 
+                        ?? new List<string>()
+               )
+               .Metadata.SetValueComparer(new Microsoft.EntityFrameworkCore.ChangeTracking.ValueComparer<List<string>>(
+                   (c1, c2) => c1.SequenceEqual(c2),
+                   c => c.Aggregate(0, (a, v) => HashCode.Combine(a, v.GetHashCode())),
+                   c => c.ToList()))
+               ;
+               
+        builder.Property(v => v.ImageUrls).IsRequired();
 
         // Store attributes as JSONB in PostgreSQL
         builder.Property(v => v.Attributes)
                .HasColumnType("jsonb")
-                .IsRequired()
-                .HasConversion(
-                    v => JsonSerializer.Serialize(v, JsonSerializerOptions.Default),
-                    v => JsonSerializer.Deserialize<Dictionary<string, string>>(v, JsonSerializerOptions.Default) 
-                         ?? new Dictionary<string, string>()
-                )
-                .Metadata.SetValueComparer(new Microsoft.EntityFrameworkCore.ChangeTracking.ValueComparer<Dictionary<string, string>>(
-                    (c1, c2) => JsonSerializer.Serialize(c1, JsonSerializerOptions.Default) == JsonSerializer.Serialize(c2, JsonSerializerOptions.Default),
-                    c => c == null ? 0 : JsonSerializer.Serialize(c, JsonSerializerOptions.Default).GetHashCode(),
-                    c => JsonSerializer.Deserialize<Dictionary<string, string>>(JsonSerializer.Serialize(c, JsonSerializerOptions.Default), JsonSerializerOptions.Default) ?? new Dictionary<string, string>()));
+               .HasConversion(
+                   v => JsonSerializer.Serialize(v, JsonSerializerOptions.Default),
+                   v => JsonSerializer.Deserialize<Dictionary<string, string>>(v, JsonSerializerOptions.Default) 
+                        ?? new Dictionary<string, string>()
+               )
+               .IsRequired();
 
         builder.Property(v => v.ProductId)
                .IsRequired();

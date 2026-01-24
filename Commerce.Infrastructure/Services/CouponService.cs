@@ -89,16 +89,26 @@ public class CouponService : ICouponService
         return coupons.FirstOrDefault();
     }
 
-    public async Task<bool> DeactivateCouponAsync(string code, CancellationToken cancellationToken = default)
+    public async Task<bool> DeleteCouponAsync(string code, CancellationToken cancellationToken = default)
     {
         var coupon = await GetCouponByCodeAsync(code, cancellationToken);
         if (coupon == null)
             return false;
 
-        coupon.IsActive = false;
-        await _couponRepository.UpdateAsync(coupon, cancellationToken);
+        await _couponRepository.DeleteAsync(coupon, cancellationToken);
         await _couponRepository.SaveChangesAsync(cancellationToken);
 
         return true;
+    }
+
+    public async Task<Coupon> UpdateCouponAsync(Coupon coupon, CancellationToken cancellationToken = default)
+    {
+        await _couponRepository.UpdateAsync(coupon, cancellationToken);
+        await _couponRepository.SaveChangesAsync(cancellationToken);
+        return coupon;
+    }
+    public async Task<IEnumerable<Coupon>> GetAllCouponsAsync(CancellationToken cancellationToken = default)
+    {
+        return await _couponRepository.GetAllAsync(cancellationToken);
     }
 }

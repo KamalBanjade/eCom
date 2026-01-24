@@ -36,7 +36,7 @@ public class CouponsController : ControllerBase
                 Code = request.Code,
                 DiscountType = request.DiscountType,
                 DiscountValue = request.DiscountValue,
-                ExpiryDate = request.ExpiryDate,
+                ExpiryDate = DateTime.SpecifyKind(request.ExpiryDate, DateTimeKind.Utc),
                 MaxUses = request.MaxUses,
                 MinOrderAmount = request.MinOrderAmount,
                 CurrentUses = 0,
@@ -60,6 +60,14 @@ public class CouponsController : ControllerBase
         }
     }
 
+    [HttpGet]
+    [Authorize(Roles = "Admin,SuperAdmin")]
+    public async Task<IActionResult> GetAllCoupons(CancellationToken cancellationToken)
+    {
+        var coupons = await _couponService.GetAllCouponsAsync(cancellationToken);
+        return Ok(new { success = true, data = coupons });
+    }
+
     [HttpGet("{code}")]
     [Authorize(Roles = "Admin,SuperAdmin")]
     public async Task<IActionResult> GetCoupon(string code, CancellationToken cancellationToken)
@@ -71,15 +79,47 @@ public class CouponsController : ControllerBase
         return Ok(new { success = true, data = coupon });
     }
 
-    [HttpDelete("{code}")]
+    [HttpPut("{code}")]
     [Authorize(Roles = "Admin,SuperAdmin")]
-    public async Task<IActionResult> DeactivateCoupon(string code, CancellationToken cancellationToken)
+    public async Task<IActionResult> UpdateCoupon(string code, [FromBody] UpdateCouponRequest request, CancellationToken cancellationToken)
     {
-        var result = await _couponService.DeactivateCouponAsync(code, cancellationToken);
-        if (!result)
+        if (code != request.Code) // Optional check if code matches
+             return BadRequest("Code mismatch");
+
+        var coupon = await _couponService.GetCouponByCodeAsync(code, cancellationToken);
+        if (coupon == null)
             return NotFound(new { success = false, message = "Coupon not found" });
 
-        return Ok(new { success = true, data = true, message = "Coupon deactivated successfully" });
+        // Map updates
+        coupon.DiscountType = request.DiscountType;
+        coupon.DiscountValue = request.DiscountValue;
+        coupon.ExpiryDate = DateTime.SpecifyKind(request.ExpiryDate, DateTimeKind.Utc);
+        coupon.MaxUses = request.MaxUses;
+        coupon.MinOrderAmount = request.MinOrderAmount;
+        coupon.IsActive = request.IsActive;
+
+        await _couponService.UpdateCouponAsync(coupon, cancellationToken);
+
+        return Ok(new { success = true, data = coupon, message = "Coupon updated successfully" });
+    }
+
+    [HttpDelete("{code}")]
+    [Authorize(Roles = "Admin,SuperAdmin")]
+    public async Task<IActionResult> DeleteCoupon(string code, CancellationToken cancellationToken)
+    {
+        try 
+        {
+            var result = await _couponService.DeleteCouponAsync(code, cancellationToken);
+            if (!result)
+                return NotFound(new { success = false, message = "Coupon not found" });
+
+            return Ok(new { success = true, data = true, message = "Coupon deleted successfully" });
+        }
+        catch (Exception ex)
+        {
+            // Handle FK constraints
+            return Conflict(new { success = false, message = "Cannot delete coupon. It might be in use." });
+        }
     }
 
     [HttpPost("apply")]

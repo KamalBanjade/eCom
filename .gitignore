@@ -18,6 +18,8 @@ obj/
 
 # Environment variables
 .env
+.env.local
+.env.*.local
 
 # Packages
 *.nupkg

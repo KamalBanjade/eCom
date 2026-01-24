@@ -10,7 +10,7 @@ namespace Commerce.API.Controllers;
 
 [Route("api/admin/orders")]
 [ApiController]
-[Authorize(Roles = "Admin,SuperAdmin")]
+[Authorize(Roles = "Admin,SuperAdmin,Warehouse,Support")]
 public class AdminOrdersController : ControllerBase
 {
     private readonly IOrderService _orderService;
@@ -25,9 +25,6 @@ public class AdminOrdersController : ControllerBase
     /// <summary>
     /// Admin: Retrieves all orders with pagination and filtering
     /// </summary>
-    /// <param name="filter">Filter parameters</param>
-    /// <param name="cancellationToken">Cancellation token</param>
-    /// <returns>Paginated list of orders</returns>
     [HttpGet]
     public async Task<ActionResult<ApiResponse<PagedResult<OrderDto>>>> GetOrders(
         [FromQuery] OrderFilterRequest filter,
@@ -41,6 +38,7 @@ public class AdminOrdersController : ControllerBase
     /// Admin: Quick view for orders pending payment (Khalti unpaid)
     /// </summary>
     [HttpGet("pending-payment")]
+    [Authorize(Roles = "Admin,SuperAdmin")]
     public async Task<ActionResult<ApiResponse<PagedResult<OrderDto>>>> GetPendingPaymentOrders(
         [FromQuery] int page = 1,
         [FromQuery] int pageSize = 10,
@@ -54,6 +52,7 @@ public class AdminOrdersController : ControllerBase
     /// Admin: Quick view for orders with return requests
     /// </summary>
     [HttpGet("returns")]
+    [Authorize(Roles = "Admin,SuperAdmin,Support,Warehouse")]
     public async Task<ActionResult<ApiResponse<PagedResult<OrderDto>>>> GetOrdersWithReturns(
         [FromQuery] int page = 1,
         [FromQuery] int pageSize = 10,
@@ -66,9 +65,6 @@ public class AdminOrdersController : ControllerBase
     /// <summary>
     /// Admin: Retrieves a specific order by ID with full details
     /// </summary>
-    /// <param name="id">Order ID</param>
-    /// <param name="cancellationToken">Cancellation token</param>
-    /// <returns>Order details</returns>
     [HttpGet("{id}")]
     public async Task<ActionResult<ApiResponse<OrderDto>>> GetOrderById(
         Guid id,
@@ -86,16 +82,22 @@ public class AdminOrdersController : ControllerBase
     /// <summary>
     /// Admin: Updates the status of an order
     /// </summary>
-    /// <param name="id">Order ID</param>
-    /// <param name="request">New status</param>
-    /// <param name="cancellationToken">Cancellation token</param>
-    /// <returns>Updated order</returns>
     [HttpPut("{id}/status")]
+    [Authorize(Roles = "Admin,SuperAdmin,Warehouse")]
     public async Task<ActionResult<ApiResponse<OrderDto>>> UpdateOrderStatus(
         Guid id,
         [FromBody] UpdateOrderStatusRequest request,
         CancellationToken cancellationToken)
     {
+        // RBAC Logic for Warehouse
+        if (User.IsInRole("Warehouse"))
+        {
+            if (request.Status != OrderStatus.Processing && request.Status != OrderStatus.Shipped)
+            {
+                return StatusCode(403, ApiResponse<OrderDto>.ErrorResponse("Warehouse staff can only update status to Processing or Shipped"));
+            }
+        }
+
         var result = await _orderService.UpdateOrderStatusAsync(id, request.Status, cancellationToken);
         
         if (!result.Success)
@@ -108,6 +110,7 @@ public class AdminOrdersController : ControllerBase
     /// Admin: Assigns an order to warehouse or support staff
     /// </summary>
     [HttpPatch("{id}/assign")]
+    [Authorize(Roles = "Admin,SuperAdmin")]
     public async Task<ActionResult<ApiResponse<OrderDto>>> AssignOrder(
         Guid id,
         [FromBody] AssignOrderRequest request,
@@ -125,6 +128,7 @@ public class AdminOrdersController : ControllerBase
     /// Admin: Exports orders to CSV based on filters
     /// </summary>
     [HttpPost("export")]
+    [Authorize(Roles = "Admin,SuperAdmin")]
     public async Task<IActionResult> ExportOrders(
         [FromBody] OrderFilterRequest filter,
         CancellationToken cancellationToken)
@@ -134,7 +138,6 @@ public class AdminOrdersController : ControllerBase
         filter.PageSize = 10000; 
         
         var result = await _orderService.GetOrdersAsync(filter, cancellationToken);
-        // ✅ FIXED: Changed from result.Data to result.Items
         var csvBytes = await _exportService.ExportOrdersToCsvAsync(result.Items, cancellationToken);
         
         return File(csvBytes, "text/csv", $"orders_export_{DateTime.UtcNow:yyyyMMddHHmmss}.csv");

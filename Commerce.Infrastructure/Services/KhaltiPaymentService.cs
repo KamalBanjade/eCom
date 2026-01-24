@@ -124,4 +124,83 @@ public class KhaltiPaymentService : IKhaltiPaymentService
             throw;
         }
     }
+
+
+public async Task<KhaltiRefundResponse> RefundPaymentAsync(
+    string transactionId,
+    long? amountInPaisa = null,
+    string? mobile = null,
+    CancellationToken cancellationToken = default)
+{
+    try
+    {
+        _logger.LogInformation(
+            "Initiating Khalti refund for TransactionId: {TransactionId}, Amount: {Amount}, Mobile: {Mobile}", 
+            transactionId, amountInPaisa, mobile);
+
+        // Build refund request based on parameters
+        var refundRequest = new KhaltiRefundRequest();
+        
+        if (amountInPaisa.HasValue)
+        {
+            refundRequest.Amount = amountInPaisa.Value;
+        }
+        
+        if (!string.IsNullOrEmpty(mobile))
+        {
+            refundRequest.Mobile = mobile;
+        }
+
+        // Build complete URL using transaction_id (NOT pidx!)
+        var refundBaseUrl = _settings.RefundUrl.TrimEnd('/');
+        var fullUrl = $"{refundBaseUrl}/{transactionId}/refund/";
+        
+        _logger.LogInformation("Calling refund endpoint: {Url} with payload: {Payload}", 
+            fullUrl, JsonSerializer.Serialize(refundRequest));
+
+        // DIAGNOSTIC CONSOLE LOG
+        Console.WriteLine("==========================================================");
+        Console.WriteLine("[KHALTI API CALL DETAILS]");
+        Console.WriteLine($"Full URL: {fullUrl}");
+        Console.WriteLine($"Refund Base URL: {refundBaseUrl}");
+        Console.WriteLine($"Transaction ID Parameter: {transactionId}");
+        Console.WriteLine($"Request Body: {JsonSerializer.Serialize(refundRequest)}");
+        Console.WriteLine("CRITICAL: Check if transactionId is actually Pidx!");
+        Console.WriteLine("==========================================================");
+
+        // Create dedicated HttpClient for refund (different base URL than payments)
+        using var refundClient = new HttpClient();
+        refundClient.DefaultRequestHeaders.Authorization = 
+            new AuthenticationHeaderValue("Key", _settings.SecretKey);
+
+        var response = await refundClient.PostAsJsonAsync(
+            fullUrl,
+            refundRequest,
+            cancellationToken);
+
+        var responseContent = await response.Content.ReadAsStringAsync(cancellationToken);
+        
+        if (!response.IsSuccessStatusCode)
+        {
+            _logger.LogError("Khalti refund failed: {StatusCode} - {Error}", 
+                response.StatusCode, responseContent);
+            throw new HttpRequestException($"Khalti refund failed: {response.StatusCode} - {responseContent}");
+        }
+
+        var result = JsonSerializer.Deserialize<KhaltiRefundResponse>(responseContent);
+        
+        if (result == null)
+            throw new InvalidOperationException("Khalti refund response is null");
+
+        _logger.LogInformation("Khalti refund successful. TransactionId: {TxnId}, Detail: {Detail}", 
+            transactionId, result.Detail);
+
+        return result;
+    }
+    catch (Exception ex)
+    {
+        _logger.LogError(ex, "Error processing Khalti refund for TransactionId: {TransactionId}", transactionId);
+        throw;
+    }
+}
 }
